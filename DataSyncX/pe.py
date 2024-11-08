@@ -98,18 +98,6 @@ if not client:
 db = client[config['DEFAULT']['mongodb_database']]
 log_db = client[config['DEFAULT']['mongodb_log_database']]
 
-# Add this helper function at the top level
-def normalize_link_field(df):
-    """Normalize the LINK field in the dataframe"""
-    try:
-        # Convert LINK field to string representation if it exists
-        if 'LINK' in df.columns:
-            df['LINK'] = df['LINK'].apply(lambda x: str(x) if x is not None else '')
-        return df
-    except Exception as e:
-        st.error(f"Error normalizing LINK field: {e}")
-        return df
-
 # Sidebar Navigation
 with st.sidebar:
     # Logo/Header Section
@@ -631,35 +619,12 @@ elif selected == "DHR Documents":
         dhr_documents = pd.DataFrame(list(db[config['DEFAULT']['mongodb_collection']].find()))
         
         if not dhr_documents.empty:
-            dhr_documents = normalize_link_field(dhr_documents)
-
-            # Extract download URL and create direct download link
-            def create_download_link(link_str):
-                try:
-                    if isinstance(link_str, str) and 'cloudinary.com' in link_str:
-                        # Extract URL using string manipulation
-                        start = link_str.find("'DOWNLOAD_URL': '") + len("'DOWNLOAD_URL': '")
-                        end = link_str.find("'", start)
-                        url = link_str[start:end]
-                        # Modify URL to force download
-                        if url:
-                            # Add Cloudinary parameters to force download
-                            url = url.replace('/upload/', '/upload/fl_attachment/')
-                            # Add Content-Disposition header
-                            filename = url.split('/')[-1]
-                            url = f"{url}?attachment={filename}"
-                        return url
-                    return None
-                except:
-                    return None
-            
-            # Add download URL column
-            if 'LINK' in dhr_documents.columns:
-                dhr_documents['download_url'] = dhr_documents['LINK'].apply(create_download_link)
+            # Debug: Show available columns
+            st.write("Available columns:", dhr_documents.columns.tolist())
             
             # Filters Section
             with st.expander("🔍 Filters", expanded=True):
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 
                 with col1:
                     # Date Range Filter
@@ -670,72 +635,51 @@ elif selected == "DHR Documents":
                     )
                 
                 with col2:
-                    # Activity ID Filter
-                    if 'ACTIVITY_ID' in dhr_documents.columns:
-                        st.markdown('<p style="color: #333; font-weight: 500;">🔖 Activity ID</p>', unsafe_allow_html=True)
-                        activity_ids = ['All'] + sorted(list(dhr_documents['ACTIVITY_ID'].unique()))
-                        selected_activity = st.selectbox(
-                            "",  # Empty label since we use markdown above
-                            activity_ids,
-                            key="dhr_activity_filter"
-                        )
+                    # DHR ID Filter
+                    if 'dhr_id' in dhr_documents.columns:
+                        st.markdown('<p style="color: #333; font-weight: 500;">🔍 DHR ID</p>', unsafe_allow_html=True)
+                        dhr_ids = ['All'] + sorted(dhr_documents['dhr_id'].unique().tolist())
+                        selected_dhr = st.selectbox("", dhr_ids)
                     else:
-                        st.warning("Activity ID field not found")
-                        selected_activity = 'All'
-                
-                with col3:
-                    # OFFSET Filter
-                    if 'OFFSET' in dhr_documents.columns:
-                        st.markdown('<p style="color: #333; font-weight: 500;">🔍 OFFSET</p>', unsafe_allow_html=True)
-                        offset_values = ['All'] + sorted(list(dhr_documents['OFFSET'].unique()))
-                        selected_offset = st.selectbox(
-                            "",  # Empty label since we use markdown above
-                            offset_values,
-                            key="dhr_offset_filter"
-                        )
-                    else:
-                        st.warning("OFFSET field not found")
-                        selected_offset = 'All'
+                        selected_dhr = 'All'
             
             # Apply filters
             filtered_dhr_documents = dhr_documents.copy()
             
-            # Apply date filter
+            # Convert timestamp if it exists
             if 'timestamp' in filtered_dhr_documents.columns:
                 filtered_dhr_documents['timestamp'] = pd.to_datetime(filtered_dhr_documents['timestamp'])
+                
+                # Apply date filter
                 mask = (filtered_dhr_documents['timestamp'].dt.date >= date_filter[0]) & \
-                    (filtered_dhr_documents['timestamp'].dt.date <= date_filter[1])
+                      (filtered_dhr_documents['timestamp'].dt.date <= date_filter[1])
                 filtered_dhr_documents = filtered_dhr_documents[mask]
             
-            # Apply activity filter
-            if selected_activity != 'All' and 'ACTIVITY_ID' in filtered_dhr_documents.columns:
-                filtered_dhr_documents = filtered_dhr_documents[filtered_dhr_documents['ACTIVITY_ID'] == selected_activity]
+            # Apply DHR filter
+            if selected_dhr != 'All' and 'dhr_id' in filtered_dhr_documents.columns:
+                filtered_dhr_documents = filtered_dhr_documents[filtered_dhr_documents['dhr_id'] == selected_dhr]
             
-            # Apply OFFSET filter
-            if selected_offset != 'All' and 'OFFSET' in filtered_dhr_documents.columns:
-                filtered_dhr_documents = filtered_dhr_documents[filtered_dhr_documents['OFFSET'] == selected_offset]
-            
-            # Update metrics display
+            # Display summary metrics
             st.markdown('<h3 style="color: #333; margin-top: 1rem;">📊 Summary</h3>', unsafe_allow_html=True)
-            metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+            
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
             
             with metric_col1:
                 total_records = len(filtered_dhr_documents)
                 st.metric("Total Records", f"{total_records:,}")
             
             with metric_col2:
-                if 'ACTIVITY_ID' in filtered_dhr_documents.columns:
-                    unique_activities = filtered_dhr_documents['ACTIVITY_ID'].nunique()
-                    st.metric("Unique Activities", f"{unique_activities:,}")
+                if 'dhr_id' in filtered_dhr_documents.columns:
+                    unique_dhrs = filtered_dhr_documents['dhr_id'].nunique()
+                    st.metric("Unique DHRs", f"{unique_dhrs:,}")
+                else:
+                    st.metric("Unique DHRs", "N/A")
             
             with metric_col3:
-                if 'OFFSET' in filtered_dhr_documents.columns:
-                    unique_offsets = filtered_dhr_documents['OFFSET'].nunique()
-                    st.metric("Unique OFFSETs", f"{unique_offsets:,}")
+                if 'file_size' in filtered_dhr_documents.columns:
+                    total_size = filtered_dhr_documents['file_size'].sum() / (1024 * 1024)  # Convert to MB
+                    st.metric("Total Size", f"{total_size:.2f} MB")
             
-            with metric_col4:
-                st.metric("Date Range", f"{date_filter[0]} to {date_filter[1]}")
-
             # Display the data
             st.markdown('<h3 style="color: #333; margin-top: 1rem;">📋 Records</h3>', unsafe_allow_html=True)
             
@@ -744,39 +688,14 @@ elif selected == "DHR Documents":
             if 'timestamp' in display_dhr_documents.columns:
                 display_dhr_documents['timestamp'] = display_dhr_documents['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
             
-            # Move download_url to the first column if it exists
-            if 'download_url' in display_dhr_documents.columns:
-                cols = ['download_url'] + [col for col in display_dhr_documents.columns if col != 'download_url']
-                display_dhr_documents = display_dhr_documents[cols]
-            
-            # Display as interactive table with download links
+            # Display as a table
             st.dataframe(
                 display_dhr_documents,
                 use_container_width=True,
-                height=400,
-                column_config={
-                    "download_url": st.column_config.LinkColumn(
-                        "Download PDF",
-                        help="Click to download PDF directly",
-                        validate="^https://.*",
-                        max_chars=100,
-                        display_text="⬇️ Download"
-                    ),
-                    "timestamp": st.column_config.DatetimeColumn(
-                        "Timestamp",
-                        format="DD/MM/YYYY HH:mm"
-                    ),
-                    "OFFSET": "DHR ID",
-                    "ACTIVITY_ID": "Activity ID",
-                    "LINK": st.column_config.TextColumn(
-                        "LINK",
-                        width="medium",
-                        help="Raw LINK data"
-                    )
-                }
+                height=400
             )
-
-             # Export functionality
+            
+            # Export functionality
             st.markdown("---")
             col1, col2 = st.columns(2)
             
@@ -790,8 +709,7 @@ elif selected == "DHR Documents":
                         mime="text/csv"
                     )
             
-            with col2:
-                st.info("💡 Click the Download links or buttons to save PDFs directly")
+           
             
         else:
             st.info("No DHR documents available")
@@ -806,7 +724,6 @@ Available Columns: {dhr_documents.columns.tolist() if 'dhr_documents' in locals(
 Stack Trace:
 {traceback.format_exc()}
             """)
-
 
 elif selected == "S3 Logs":
     st.markdown('<h1 style="color: #333;">☁️ S3 Storage Logs</h1>', unsafe_allow_html=True)
