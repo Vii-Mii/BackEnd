@@ -15,6 +15,9 @@ import traceback
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 
 def resource_path(relative_path):
     """ Get the absolute path to the resource, works for dev and for PyInstaller """
@@ -273,20 +276,38 @@ def extract_and_transform(data_file, pdf_file, activity_id, logger):
         logger.error(traceback.format_exc())
         return None
 
-def upload_to_s3(pdf_file, base_name, bucket_name, s3_prefix, aws_access_key_id, aws_secret_access_key, logger, key):
+def initialize_cloudinary(config):
+    """Initialize Cloudinary with credentials"""
     try:
-        s3 = boto3.client(
-            's3',
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key
+        cloudinary.config(
+            cloud_name = config['DEFAULT']['cloudinary_cloud_name'],
+            api_key = config['DEFAULT']['cloudinary_api_key'],
+            api_secret = config['DEFAULT']['cloudinary_api_secret']
         )
-        s3_key = os.path.join(s3_prefix, key+"_data")
-        s3.upload_file(pdf_file, bucket_name, s3_key)
-        s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_key}"
-        logger.info(f"PDF file uploaded to S3: {pdf_file} at {s3_url}")
-        return s3_key
+        # Test configuration
+        cloudinary.api.ping()
+        return True
     except Exception as e:
-        logger.error(f"PDF file upload to S3 failed for: {pdf_file}. Error: {e}")
+        print(f"Failed to initialize Cloudinary: {e}")
+        return False
+
+def upload_to_cloudinary(pdf_file, key, logger):
+    try:
+        # Upload the file
+        result = cloudinary.uploader.upload(
+            pdf_file,
+            public_id=f'attachments/{key}',
+            resource_type="auto",
+            folder="datasyncx"  # Optional: organize files in folders
+        )
+        
+        # Get the secure URL
+        download_url = result['secure_url']
+        
+        logger.info(f"PDF file uploaded to Cloudinary: {pdf_file} at {download_url}")
+        return download_url
+    except Exception as e:
+        logger.error(f"PDF file upload to Cloudinary failed for: {pdf_file}. Error: {e}")
         return None
 
 def insert_into_mongodb(json_data, mongodb_uri, mongodb_database, mongodb_collection, logger):
@@ -344,10 +365,7 @@ def process_files(activity_id, logger):
     processed_folder = f"{config['DEFAULT']['processed_folder']}"
     binary_folder = f"{config['DEFAULT']['binary_folder']}"
     error_folder = config['DEFAULT']['error_folder']
-    aws_access_key_id = config['DEFAULT']['aws_access_key_id']
-    aws_secret_access_key = config['DEFAULT']['aws_secret_access_key']
-    aws_bucket_name = config['DEFAULT']['aws_bucket_name']
-    aws_s3_prefix = config['DEFAULT']['aws_s3_prefix']
+    
 
     total_files = 0
     passed_files = 0
@@ -382,16 +400,19 @@ def process_files(activity_id, logger):
 
                 pair_logs.append(f"Data extraction and transformation successful for: {data_file}")
 
-                # S3 Upload
+                # Cloudinary Upload
                 key = json_data["LINK"][0]["ARC_DOC_ID"]
                 binary_file = os.path.join(binary_folder, key+"_data")
                 shutil.copy(pdf_file, binary_file)
-                # s3_key = upload_to_s3(binary_file, base_name, aws_bucket_name, aws_s3_prefix, aws_access_key_id, aws_secret_access_key, logger, key)
-                s3_key = "1"
-                if not s3_key:
-                    raise Exception(f"Failed to upload to S3 for: {pdf_file}")
+                
+                cloudinary_url = upload_to_cloudinary(binary_file, key, logger)
+                if not cloudinary_url:
+                    raise Exception(f"Failed to upload to Cloudinary for: {pdf_file}")
 
-                pair_logs.append(f"PDF file uploaded to S3: {pdf_file} at {s3_key}")
+                # Update the JSON data with the Cloudinary URL
+                json_data["LINK"] = cloudinary_url
+
+                pair_logs.append(f"PDF file uploaded to Cloudinary: {pdf_file} at {cloudinary_url}")
 
                 # MongoDB Insertion
                 insert_into_mongodb(json_data, config['DEFAULT']['mongodb_uri'], config['DEFAULT']['mongodb_database'], config['DEFAULT']['mongodb_collection'], logger)
@@ -418,7 +439,7 @@ def process_files(activity_id, logger):
 
                 # Logging Pair History and S3 Info
                 log_pair_history(activity_id, base_name, "Passed", end_time.isoformat(),dhr_id, logger)
-                log_s3_info(activity_id, base_name, s3_key,dhr_id, logger)
+                log_s3_info(activity_id, base_name, cloudinary_url,dhr_id, logger)
 
                 logger.info("_________________________________________________________________________________________________________________________________")
 
@@ -481,4 +502,10 @@ def process_activity(activity_id):
 
 if __name__ == "__main__":
     activity_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    process_activity(activity_id)
+    
+    # Initialize Cloudinary before processing
+    if initialize_cloudinary(config):
+        process_activity(activity_id)
+    else:
+        print("Failed to initialize Cloudinary. Exiting...")
+        sys.exit(1)
