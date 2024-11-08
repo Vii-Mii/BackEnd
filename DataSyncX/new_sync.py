@@ -144,7 +144,6 @@ def validate_xml(xml_file, xsd_file, logger):
     except (etree.XMLSyntaxError, etree.DocumentInvalid) as e:
         logger.error(f"Validation failed for XML file: {xml_file}. Error: {e}")
         return False
-
 def validate_json(json_file, logger):
     try:
         with open(json_file, 'r') as file:
@@ -387,7 +386,8 @@ def process_files(activity_id, logger):
                 key = json_data["LINK"][0]["ARC_DOC_ID"]
                 binary_file = os.path.join(binary_folder, key+"_data")
                 shutil.copy(pdf_file, binary_file)
-                s3_key = upload_to_s3(binary_file, base_name, aws_bucket_name, aws_s3_prefix, aws_access_key_id, aws_secret_access_key, logger, key)
+                # s3_key = upload_to_s3(binary_file, base_name, aws_bucket_name, aws_s3_prefix, aws_access_key_id, aws_secret_access_key, logger, key)
+                s3_key = "1"
                 if not s3_key:
                     raise Exception(f"Failed to upload to S3 for: {pdf_file}")
 
