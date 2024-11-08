@@ -1,27 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
-
-    <!-- Root element -->
+    <!-- Definition of the 'document' element -->
     <xs:element name="document">
         <xs:complexType>
             <xs:sequence>
-                <!-- Name element -->
+                <!-- Definition of the 'name' element, which is a string -->
                 <xs:element name="name" type="xs:string"/>
-                
-                <!-- Age element -->
-                <xs:element name="age">
-                    <xs:simpleType>
-                        <xs:restriction base="xs:integer">
-                            <xs:minInclusive value="0"/>
-                            <xs:maxInclusive value="150"/>
-                        </xs:restriction>
-                    </xs:simpleType>
-                </xs:element>
-                
-                <!-- Color element -->
+
+                <!-- Definition of the 'age' element, which is an integer -->
+                <xs:element name="age" type="xs:string"/>
+
+                <!-- Definition of the 'color' element, which is a string -->
                 <xs:element name="color" type="xs:string"/>
             </xs:sequence>
         </xs:complexType>
     </xs:element>
-
-</xs:schema> 
+</xs:schema>

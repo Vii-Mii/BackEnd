@@ -123,16 +123,24 @@ def read_properties(file_path):
 
 config = read_properties(properties_path)
 
+
 def validate_xml(xml_file, xsd_file, logger):
     try:
-        with open(xsd_file, 'r') as xsd:
+        # Read and parse the XSD schema
+        with open(xsd_file, 'rb') as xsd:
             schema_root = etree.XML(xsd.read())
         schema = etree.XMLSchema(schema_root)
-        with open(xml_file, 'r') as xml:
+
+        # Read and parse the XML file as bytes to avoid encoding issues
+        with open(xml_file, 'rb') as xml:
             xml_doc = etree.parse(xml)
+
+        # Validate the XML file against the schema
         schema.assertValid(xml_doc)
+
         logger.info(f"Validation successful for XML file: {xml_file}")
         return True
+
     except (etree.XMLSyntaxError, etree.DocumentInvalid) as e:
         logger.error(f"Validation failed for XML file: {xml_file}. Error: {e}")
         return False
