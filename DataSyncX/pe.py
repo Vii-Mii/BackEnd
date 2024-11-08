@@ -154,28 +154,7 @@ if selected == "Dashboard":
     # Header
     st.title("📊 DataSyncX Dashboard")
     
-    # Filters Section
-    with st.expander("🔍 Filters", expanded=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            # Date Range Filter
-            date_range = st.date_input(
-                "📅 Select Date Range",
-                value=(datetime.now() - timedelta(days=7), datetime.now())
-            )
-        with col2:
-            # Activity Filter
-            try:
-                activity_ids = list(log_db[config['DEFAULT']['mongodb_log_activity_info_collection']].distinct('activity_id'))
-                if activity_ids:
-                    selected_activity = st.selectbox("🔖 Select Activity ID", activity_ids)
-                else:
-                    st.info("No activities found")
-                    selected_activity = None
-            except Exception as e:
-                st.error(f"Error loading activities: {e}")
-                selected_activity = None
-
+    
     # Metrics Row
     st.subheader("📈 Key Metrics")
     col1, col2, col3, col4 = st.columns(4)
@@ -183,7 +162,7 @@ if selected == "Dashboard":
     with col1:
         try:
             total_docs = db[config['DEFAULT']['mongodb_collection']].count_documents({})
-            st.metric("📑 Total Documents", f"{total_docs:,}")
+            st.metric("📑 Total Processed Documents", f"{total_docs:,}")
         except Exception as e:
             st.metric("📑 Total Documents", "Error")
     
@@ -205,13 +184,6 @@ if selected == "Dashboard":
         except Exception as e:
             st.metric("📁 Files in Pickup", "Error")
     
-    with col4:
-        try:
-            recent_activities = len(activity_ids) if activity_ids else 0
-            st.metric("🔄 Recent Activities", recent_activities)
-        except Exception as e:
-            st.metric("🔄 Recent Activities", "Error")
-
     # Charts Section
     st.subheader("📊 Processing Statistics")
     
@@ -246,6 +218,165 @@ if selected == "Dashboard":
                 st.plotly_chart(fig2, use_container_width=True)
     except Exception as e:
         st.error(f"Error creating charts: {e}")
+        
+            
+    # Dashboard Visualizations
+    st.markdown("### 📊 Processing Analytics")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Processing Timeline using activity_start_time
+        try:
+            # Convert activity_start_time to datetime if it's not already
+            activity_info['activity_start_time'] = pd.to_datetime(activity_info['activity_start_time'])
+            
+            # Create timeline chart
+            fig1 = px.line(activity_info, 
+                        x='activity_start_time', 
+                        y='total_files',
+                        title='Processing Volume Over Time',
+                        labels={
+                            'activity_start_time': 'Processing Time',
+                            'total_files': 'Number of Files'
+                        })
+            
+            fig1.update_layout(
+                xaxis_title="Processing Time",
+                yaxis_title="Number of Files",
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig1, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error creating timeline chart: {str(e)}")
+
+    with col2:
+        # Success/Failure Ratio
+        try:
+            success_data = pd.DataFrame({
+                'Status': ['Passed', 'Failed'],
+                'Count': [
+                    activity_info['passed_files'].sum(),
+                    activity_info['failed_files'].sum()
+                ]
+            })
+            
+            fig2 = px.pie(success_data,
+                        values='Count',
+                        names='Status',
+                        title='Processing Success Rate',
+                        color='Status',
+                        color_discrete_map={
+                            'Passed': '#4CAF50',
+                            'Failed': '#f44336'
+                        })
+            
+            fig2.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig2, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error creating pie chart: {str(e)}")
+            
+            
+    try:
+        # Get data from your MongoDB collection
+        original_data = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_history_collection']].find()))
+        
+        # Display filters
+        with st.expander("🔍 Filters", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                # Date Range Filter
+                date_range = st.date_input(
+                    "📅 Select Date Range",
+                    value=(datetime.now() - timedelta(days=7), datetime.now()),
+                    key="history_date_filter"
+                )
+            
+            with col2:
+                # Activity Filter
+                try:
+                    activity_ids = list(log_db[config['DEFAULT']['mongodb_log_activity_info_collection']].distinct('activity_id'))
+                    if activity_ids:
+                        selected_activity = st.selectbox(
+                            "🔖 Select Activity ID", 
+                            activity_ids,
+                            key="history_activity_filter"
+                        )
+                    else:
+                        st.info("No activities found")
+                        selected_activity = None
+                except Exception as e:
+                    st.error(f"Error loading activities: {e}")
+                    selected_activity = None
+            
+            with col3:
+                # Status Filter - Updated to use status_id
+                try:
+                    # Get unique status_ids from the history collection
+                    status_ids = ['All'] + sorted(list(log_db[config['DEFAULT']['mongodb_log_history_collection']].distinct('status')))
+                    selected_status = st.selectbox(
+                        "⚡ Status",
+                        status_ids,
+                        key="history_status_filter"
+                    )
+                except Exception as e:
+                    st.error(f"Error loading status IDs: {e}")
+                    selected_status = 'All'
+        
+        # Apply filters to the data
+        filtered_data = original_data.copy()
+        
+        # Apply date filter
+        if 'timestamp' in filtered_data.columns:
+            filtered_data['timestamp'] = pd.to_datetime(filtered_data['timestamp'])
+            mask = (filtered_data['timestamp'].dt.date >= date_range[0]) & \
+                (filtered_data['timestamp'].dt.date <= date_range[1])
+            filtered_data = filtered_data[mask]
+        
+        # Apply activity filter
+        if selected_activity:
+            filtered_data = filtered_data[filtered_data['activity_id'] == selected_activity]
+        
+        # Apply status filter - Updated to use status_id
+        if selected_status != 'All':
+            filtered_data = filtered_data[filtered_data['status'] == selected_status]
+        
+        # Display summary metrics
+        st.markdown("### 📊 Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Records", len(filtered_data))
+        with col2:
+            st.metric("Date Range", f"{date_range[0]} to {date_range[1]}")
+        with col3:
+            st.metric("Selected Activity", selected_activity if selected_activity else "All")
+        with col4:
+            st.metric("Status ID", selected_status)
+        
+        # Display the filtered data
+        st.markdown("### 📋 Filtered Records")
+        st.dataframe(
+            filtered_data,
+            use_container_width=True,
+            height=400
+        )
+        
+        # Export Option
+        if st.button("📥 Export Filtered Data"):
+            csv = filtered_data.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"filtered_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+
+    except Exception as e:
+        st.error(f"Error processing data: {str(e)}")
+        with st.expander("View Error Details"):
+            st.code(traceback.format_exc())
+
+
 
 elif selected == "Processing History":
     st.markdown('<h1 style="color: #333;">📜 Processing History</h1>', unsafe_allow_html=True)
@@ -708,6 +839,10 @@ Stack Trace:
 elif selected == "Settings":
     st.title("⚙️ Settings")
     st.write("Configuration settings will appear here")
+
+
+# Add metrics summary
+
 
 # Refresh Button (Fixed)
 if st.button("🔄 Refresh Data"):
