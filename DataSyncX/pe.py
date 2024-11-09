@@ -205,9 +205,7 @@ try:
         db = db_client[st.secrets["DEFAULT"]["mongodb_database"]]
         log_db = db_client[st.secrets["DEFAULT"]["mongodb_log_database"]]
         
-        # Test database access
-        print(f"Available collections in main DB: {db.list_collection_names()}")
-        st.success("✅ Database connected!")
+        
     else:
         st.error("⚠️ Database connection failed!")
         st.stop()
