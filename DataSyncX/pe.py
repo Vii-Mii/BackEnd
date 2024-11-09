@@ -18,7 +18,112 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS with more styling
+def check_password():
+    """Returns `True` if the user had the correct credentials."""
+    
+    # Custom CSS for login page only
+    st.markdown("""
+        <style>
+            .login-container {
+                max-width: 400px;
+                margin: 0 auto;
+                padding: 2rem;
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            .login-header {
+                text-align: center;
+                margin-bottom: 2rem;
+            }
+            .login-logo {
+                font-size: 3rem;
+                margin-bottom: 1rem;
+            }
+            .stButton > button {
+                width: 100%;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Center the login form
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        def credentials_entered():
+            """Checks whether credentials entered by the user are correct."""
+            # Get username and password from secrets
+            valid_username1 = st.secrets["credentials"]["username1"]
+            valid_username2 = st.secrets["credentials"]["username2"]
+            valid_password = st.secrets["credentials"]["password"]
+            
+            # Check if entered credentials are correct
+            if (st.session_state["username"] in [valid_username1, valid_username2] and 
+                st.session_state["password"] == valid_password):
+                st.session_state["password_correct"] = True
+            else:
+                st.session_state["password_correct"] = False
+
+        # First run, show input for credentials
+        if "password_correct" not in st.session_state:
+            # Show logo and company name only on initial password screen
+            st.markdown("""
+                <div class="login-container">
+                    <div class="login-header">
+                        <div class="login-logo">🔄</div>
+                        <h1 style='color: #4CAF50; margin-bottom: 0.5rem;'>DataSyncX</h1>
+                        <p style='color: #666; font-size: 0.9rem;'>Enterprise Data Synchronization Solution</p>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            st.text_input(
+                "Username", 
+                key="username",
+                placeholder="Enter your username"
+            )
+            st.text_input(
+                "Password", 
+                type="password", 
+                on_change=credentials_entered, 
+                key="password",
+                placeholder="••••••••"
+            )
+            st.markdown("""
+                <p style='text-align: center; color: #666; font-size: 0.8rem; margin-top: 1rem;'>
+                    Contact your administrator if you need access.
+                </p>
+            """, unsafe_allow_html=True)
+            return False
+        
+        # Credentials incorrect
+        elif not st.session_state["password_correct"]:
+            st.text_input(
+                "Username", 
+                key="username",
+                placeholder="Enter your username"
+            )
+            st.text_input(
+                "Password", 
+                type="password", 
+                on_change=credentials_entered, 
+                key="password",
+                placeholder="••••••••"
+            )
+            st.error("😕 Incorrect username or password")
+            st.markdown("""
+                <p style='text-align: center; color: #666; font-size: 0.8rem; margin-top: 1rem;'>
+                    Forgot your password? Contact your administrator.
+                </p>
+            """, unsafe_allow_html=True)
+            return False
+        
+        return True
+
+# Check password before showing the main app
+if not check_password():
+    st.stop()
+
+# Main app CSS (only shown after successful login)
 st.markdown("""
     <style>
         .main {
@@ -30,18 +135,6 @@ st.markdown("""
             border-radius: 10px;
             color: white;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .stButton>button {
-            background-color: #4CAF50;
-            color: white;
-            border-radius: 5px;
-            padding: 0.5rem 1rem;
-            border: none;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-        .stButton>button:hover {
-            background-color: #45a049;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
         }
         .section-header {
             padding: 1rem;
@@ -57,9 +150,22 @@ st.markdown("""
         .sidebar .sidebar-content {
             background: #2c3e50;
         }
+        /* Button styling */
+        .stButton>button {
+            width: auto;
+            padding: 0.5rem 1rem;
+            background-color: #4CAF50;
+            color: white;
+            border-radius: 5px;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .stButton>button:hover {
+            background-color: #45a049;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
     </style>
 """, unsafe_allow_html=True)
-
 
 # Load configuration
 @st.cache_resource
@@ -131,8 +237,8 @@ with st.sidebar:
     # Navigation Menu
     selected = option_menu(
         menu_title=None,
-        options=["Dashboard", "Processing History", "Activity Info", "DHR Documents", "S3 Logs","Email Notifications", "Settings"],
-        icons=['speedometer2', 'clock-history', 'activity', 'folder', 'cloud-upload', 'envelope', 'gear'],
+        options=["Dashboard", "Processing History", "Activity Info", "DHR Documents", "S3 Logs","Email Notifications", "Settings", "About"],
+        icons=['speedometer2', 'clock-history', 'activity', 'folder', 'cloud-upload', 'envelope', 'gear', 'info-circle'],
         menu_icon="cast",
         default_index=0,
         styles={
@@ -391,6 +497,10 @@ if selected == "Dashboard":
         st.error(f"Error processing data: {str(e)}")
         with st.expander("View Error Details"):
             st.code(traceback.format_exc())
+    ## Refresh Button (Fixed)
+    if st.button("🔄 Refresh Data"):
+        st.cache_resource.clear()
+        st.rerun()
 
 
 
@@ -514,6 +624,10 @@ Error Message: {str(e)}
 Stack Trace:
 {traceback.format_exc()}
             """)
+    ## Refresh Button (Fixed)
+    if st.button("🔄 Refresh Data"):
+        st.cache_resource.clear()
+        st.rerun()
 
 elif selected == "Activity Info":
     st.markdown('<h1 style="color: #333;">📊 Activity Information</h1>', unsafe_allow_html=True)
@@ -627,6 +741,10 @@ Available Columns: {activity_info.columns.tolist() if 'activity_info' in locals(
 Stack Trace:
 {traceback.format_exc()}
             """)
+    ## Refresh Button (Fixed)
+    if st.button("🔄 Refresh Data"):
+        st.cache_resource.clear()
+        st.rerun()
 
 elif selected == "DHR Documents":
     st.markdown('<h1 style="color: #333;">📁 DHR Documents</h1>', unsafe_allow_html=True)
@@ -814,6 +932,10 @@ Available Columns: {dhr_documents.columns.tolist() if 'dhr_documents' in locals(
 Stack Trace:
 {traceback.format_exc()}
             """)
+    ## Refresh Button (Fixed)
+    if st.button("🔄 Refresh Data"):
+        st.cache_resource.clear()
+        st.rerun()
 
 
 elif selected == "S3 Logs":
@@ -927,6 +1049,10 @@ Available Columns: {s3_logs.columns.tolist() if 's3_logs' in locals() and not s3
 Stack Trace:
 {traceback.format_exc()}
             """)
+    ## Refresh Button (Fixed)
+    if st.button("🔄 Refresh Data"):
+        st.cache_resource.clear()
+        st.rerun()
             
 elif selected == "Email Notifications":
     st.markdown('<h1 style="color: #333;">📧 Email Notifications</h1>', unsafe_allow_html=True)
@@ -1038,7 +1164,10 @@ elif selected == "Email Notifications":
         st.error(f"Error loading email logs: {str(e)}")
         with st.expander("View Error Details"):
             st.code(traceback.format_exc())
-
+    ## Refresh Button (Fixed)
+    if st.button("🔄 Refresh Data"):
+        st.cache_resource.clear()
+        st.rerun()
 
 elif selected == "Settings":
     st.title("⚙️ Settings")
@@ -1115,7 +1244,220 @@ elif selected == "Settings":
 # Add metrics summary
 
 
-# Refresh Button (Fixed)
-if st.button("🔄 Refresh Data"):
-    st.cache_resource.clear()
-    st.rerun()
+
+
+elif selected == "About":
+    # Title and Overview
+    st.markdown("""
+    # 🔄 DataSyncX - Enterprise Data Synchronization Solution
+    
+    ## Overview
+    DataSyncX is a state-of-the-art Device History Record (DHR) processing and synchronization platform, designed specifically for medical device manufacturers and healthcare industries worldwide. This enterprise-grade solution streamlines the critical process of managing, validating, and archiving Device History Records, ensuring compliance with global regulatory requirements including FDA 21 CFR Part 11 and ISO 13485.
+
+    ### 🏥 Industry Focus
+    - **Medical Device Manufacturing**: Specialized in processing Device History Records (DHRs)
+    - **Healthcare Compliance**: Meets international regulatory standards
+    - **Global Operations**: Supports worldwide manufacturing facilities
+    - **Quality Assurance**: Ensures data integrity and traceability
+
+    ### 💫 Core Capabilities
+    - Automated DHR document pairing and validation
+    - Real-time processing status monitoring
+    - Secure cloud storage with versioning
+    - Comprehensive audit trails
+    - Intelligent error detection and handling
+    - Automated compliance reporting
+
+    ### 🌟 Business Impact
+    - Reduces manual DHR processing time by up to 80%
+    - Minimizes human errors in document processing
+    - Ensures regulatory compliance across global operations
+    - Provides real-time visibility into processing status
+    - Enables faster product release cycles
+    """)
+
+    # Key Features in columns
+    st.markdown("### 🎯 Key Features")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("""
+        #### 📊 Real-Time Monitoring
+        - Live dashboard metrics
+        - Processing status tracking
+        - System health monitoring
+        - Resource utilization
+        - Performance analytics
+        - Custom alerts
+        
+        #### 📁 Document Management
+        - Secure storage & retrieval
+        - Version control
+        - Audit trails
+        - File organization
+        - Multiple format support
+        - Batch processing
+        """)
+
+    with col2:
+        st.markdown("""
+        #### 🔄 Automated Processing
+        - Auto document pickup
+        - XML/PDF handling
+        - File pairing system
+        - Processing rules
+        - Validation checks
+        - Error handling
+        
+        #### 📧 Notifications
+        - Email alerts
+        - Custom rules
+        - Status updates
+        - Error notifications
+        - Batch summaries
+        - Activity reports
+        """)
+
+    with col3:
+        st.markdown("""
+        #### 📈 Advanced Analytics
+        - Performance metrics
+        - Success/failure analysis
+        - Trend visualization
+        - Custom reports
+        - Data insights
+        - KPI tracking
+        
+        #### 🔒 Security
+        - Encrypted storage
+        - Secure transfer
+        - Access control
+        - Audit logging
+        - Data protection
+        - Compliance ready
+        """)
+
+    # Target Users in columns
+    st.markdown("### 👥 Target Users")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("""
+        #### 🏭 Production Teams
+        - Monitor processing status
+        - Track efficiency
+        - Manage workflows
+        - Handle exceptions
+        
+        #### 👨‍💻 System Administrators
+        - Configure settings
+        - Monitor health
+        - Manage access
+        - Handle errors
+        """)
+
+    with col2:
+        st.markdown("""
+        #### ✅ Quality Assurance
+        - Track accuracy
+        - Monitor errors
+        - Validate pairs
+        - Ensure compliance
+        
+        #### 📊 Business Analysts
+        - Generate reports
+        - Analyze trends
+        - Track KPIs
+        - Optimize processes
+        """)
+
+    # Technical Specs and Benefits in columns
+    st.markdown("### 🛠️ Technical Specifications & Benefits")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("""
+        #### System Requirements
+        - Windows Server 2016+
+        - Python 3.8+
+        - MongoDB 4.4+
+        - 8GB RAM
+        - 100GB storage
+        """)
+
+    with col2:
+        st.markdown("""
+        #### Integration
+        - REST API support
+        - S3 storage
+        - SMTP email
+        - Custom webhooks
+        - Database connectors
+        """)
+
+    with col3:
+        st.markdown("""
+        #### Key Benefits
+        - Reduced processing time
+        - Improved accuracy
+        - Real-time monitoring
+        - Cost efficiency
+        - Scalable solution
+        """)
+
+    # Support Information
+    st.markdown("### 📞 Support & Resources")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("""
+        #### Documentation
+        - User guides
+        - API documentation
+        - Configuration guides
+        - Troubleshooting
+        
+        #### Training
+        - Online documentation
+        - Video tutorials
+        - Custom sessions
+        - Best practices
+        """)
+
+    with col2:
+        st.markdown("""
+        #### Technical Support
+        - Email: support@datasyncx.com
+        - Response time: 24-48 hours
+        - Priority support available
+        - Expert assistance
+        
+        #### Version Info
+        - Version: 1.0.0
+        - Released: 2024
+        - Last Updated: "2024-11-09"
+        """)
+
+    # Contact Form
+    st.markdown("### 📬 Contact Us")
+    with st.form("contact_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            name = st.text_input("Name")
+            email = st.text_input("Email")
+        with col2:
+            subject = st.text_input("Subject")
+            message = st.text_area("Message")
+        
+        submitted = st.form_submit_button("Send Message")
+        if submitted:
+            st.success("Thank you for your message! We'll get back to you soon.")
+
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+        <div style='text-align: center; color: #666; padding: 20px;'>
+            DataSyncX © 2024 All rights reserved
+        </div>
+    """, unsafe_allow_html=True)
+

@@ -21,6 +21,7 @@ import cloudinary.api
 import sib_api_v3_sdk
 from sib_api_v3_sdk.rest import ApiException
 
+
 def resource_path(relative_path):
     """ Get the absolute path to the resource, works for dev and for PyInstaller """
     try:
@@ -32,9 +33,56 @@ def resource_path(relative_path):
 
 # Define paths for the resources
 properties_path = resource_path('props.properties')
-offset_counter_path = resource_path('offset_counter.txt')
-arc_doc_id_counter_path = resource_path('arc_doc_id_counter.txt')
 xsd_path = resource_path('document.xsd')
+
+def get_props_path():
+    """Get the external properties file path"""
+    if getattr(sys, 'frozen', False):
+        # If running as executable, use the executable's directory
+        exe_dir = os.path.dirname(sys.executable)
+        return os.path.join(exe_dir, 'props.properties')
+    else:
+        # If running as script, use the script's directory
+        return os.path.join(os.path.dirname(__file__), 'props.properties')
+
+def ensure_props_file():
+    """Ensure properties file exists in the correct location"""
+    props_path = get_props_path()
+    if not os.path.exists(props_path):
+        # Copy from bundled resources to external location if needed
+        bundled_props = resource_path('props.properties')
+        shutil.copy2(bundled_props, props_path)
+    return props_path
+
+def read_properties(file_path):
+    config = configparser.ConfigParser()
+    with open(file_path, 'r') as f:
+        config.read_file(f)
+    return config
+
+def update_properties(config, file_path):
+    """Update properties file with new values"""
+    with open(file_path, 'w') as configfile:
+        config.write(configfile)
+
+# Initialize configuration
+try:
+    print("Starting application...")
+    print(f"Executable path: {sys.executable}")
+    print(f"Current working directory: {os.getcwd()}")
+    
+    # Get external properties file path
+    properties_path = ensure_props_file()
+    xsd_path = resource_path('document.xsd')
+    
+    print(f"Using properties file at: {properties_path}")
+    config = read_properties(properties_path)
+    print("Properties loaded successfully")
+    
+except Exception as e:
+    print(f"Critical error during initialization: {e}")
+    traceback.print_exc()
+    sys.exit(1)
 
 # Setup the main logger
 def setup_logger(activity_id):
@@ -51,16 +99,13 @@ def setup_logger(activity_id):
     logger.addHandler(file_handler)
     return logger
 
-def update_properties(config, file_path):
-    with open(file_path, 'w') as configfile:
-        config.write(configfile)
-
+# Update the get_next_id function to use the external properties file
 def get_next_id(counter_name, logger):
     try:
         current_id = int(config['DEFAULT'][counter_name])
         next_id = current_id + 1
         config['DEFAULT'][counter_name] = str(next_id).zfill(16) if counter_name == "arc_doc_id" else str(next_id)
-        update_properties(config, properties_path)
+        update_properties(config, properties_path)  # Use the external properties file
         return config['DEFAULT'][counter_name]
     except Exception as e:
         logger.error(f"Failed to update {counter_name}. Error: {e}")
@@ -120,14 +165,6 @@ def log_s3_info(activity_id, pair_name, s3_key,dhr_id, logger):
         "s3_key": s3_key
     }
     insert_into_mongodb(log_entry, config['DEFAULT']['mongodb_uri'], config['DEFAULT']['mongodb_log_database'], config['DEFAULT']['mongodb_log_s3_collection'], logger)
-
-def read_properties(file_path):
-    config = configparser.ConfigParser()
-    config.read(file_path)
-    return config
-
-config = read_properties(properties_path)
-
 
 def validate_xml(xml_file, xsd_file, logger):
     try:
@@ -603,12 +640,9 @@ def process_files(activity_id, logger):
 
                 pair_logs.append(f"Data extraction and transformation successful for: {data_file}")
 
-                # Cloudinary Upload
-                key = json_data["LINK"][0]["ARC_DOC_ID"]
-                binary_file = os.path.join(binary_folder, key+"_data")
-                shutil.copy(pdf_file, binary_file)
+
                 
-                cloudinary_url = upload_to_cloudinary(binary_file, key, logger)
+                cloudinary_url = upload_to_cloudinary(pdf_file, base_name, logger)
                 if not cloudinary_url:
                     raise Exception(f"Failed to upload to Cloudinary for: {pdf_file}")
 
@@ -711,3 +745,24 @@ if __name__ == "__main__":
     else:
         print("Failed to initialize Cloudinary. Exiting...")
         sys.exit(1)
+
+def update_props_file(config, section='DEFAULT', logger=None, **kwargs):
+    """Update properties file with new values"""
+    try:
+        # Get the executable's directory for the properties file
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+        props_path = os.path.join(exe_dir, 'props.properties')
+        
+        # Update the ConfigParser object
+        for key, value in kwargs.items():
+            config[section][key] = str(value)
+        
+        # Write to the properties file
+        with open(props_path, 'w') as configfile:
+            config.write(configfile)
+            
+        if logger:
+            logger.info(f"Updated properties file with new values: {kwargs}")
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to update properties file: {e}")

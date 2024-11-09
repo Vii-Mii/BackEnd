@@ -53,8 +53,8 @@ def create_empty_pdf(file_path):
 def generate_files(folder_path, num_files):
     os.makedirs(folder_path, exist_ok=True)
 
-    for i in range(0,num_files):
-        file_name = f"file_{i+1}"
+    for i in range(10,10+num_files):
+        file_name = f"DHR-PenangSite-{i+1}"
         xml_file_path = os.path.join(folder_path, f"{file_name}.xml")
         pdf_file_path = os.path.join(folder_path, f"{file_name}.pdf")
 
@@ -63,6 +63,6 @@ def generate_files(folder_path, num_files):
 
 # Specify the folder path and number of files
 folder_path = "C:\\DataSyncX\\pickup"
-num_files = 5  # Number of XML and PDF pairs to generate
+num_files = 10  # Number of XML and PDF pairs to generate
 
 generate_files(folder_path, num_files)
