@@ -1,539 +1,941 @@
-import logging
-import os
-import shutil
-import json
-import csv
-import sys
-
-import boto3
+import streamlit as st
+from streamlit_option_menu import option_menu
+import pandas as pd
 from pymongo import MongoClient
-from lxml import etree
-from datetime import datetime
+import plotly.express as px
 import configparser
-import xmltodict
+import os
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
 import traceback
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from io import BytesIO
 
-import cloudinary
-import cloudinary.uploader
-import cloudinary.api
+# Set page config must be the first Streamlit command
+st.set_page_config(
+    page_title="DataSyncX Monitor",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-
-def resource_path(relative_path):
-    """ Get the absolute path to the resource, works for dev and for PyInstaller """
-    try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = getattr(sys, '_MEIPASS', os.path.abspath('.'))
-    except AttributeError:
-        base_path = os.path.abspath('.')
-    return os.path.join(base_path, relative_path)
-
-
-# Define paths for the resources
-properties_path = resource_path('props.properties')
-offset_counter_path = resource_path('offset_counter.txt')
-arc_doc_id_counter_path = resource_path('arc_doc_id_counter.txt')
-xsd_path = resource_path('document.xsd')
-
-
-# Setup the main logger
-def setup_logger(activity_id):
-    log_dir = "C:/DataSyncX/logs/"
-    log_filename = f"{log_dir}\\activity_{activity_id}.log"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    logger = logging.getLogger(activity_id)
-    logger.setLevel(logging.INFO)
-    file_handler = logging.FileHandler(log_filename)
-    file_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    return logger
-
-
-def update_properties(config, file_path):
-    with open(file_path, 'w') as configfile:
-        config.write(configfile)
-
-
-def get_next_id(counter_name, logger):
-    try:
-        current_id = int(config['DEFAULT'][counter_name])
-        next_id = current_id + 1
-        config['DEFAULT'][counter_name] = str(next_id).zfill(16) if counter_name == "arc_doc_id" else str(next_id)
-        update_properties(config, properties_path)
-        return config['DEFAULT'][counter_name]
-    except Exception as e:
-        logger.error(f"Failed to update {counter_name}. Error: {e}")
-        return None
-
-
-# History logging
-def log_pair_history(activity_id, pair_name, status, timestamp, dhr_id, logger):
-    status_id = get_next_id('status_id', logger)
-    log_entry = {
-        "status_id": status_id,
-        'dhr_id': dhr_id,
-        "activity_id": activity_id,
-        "pair_name": pair_name,
-        "status": status,
-        "timestamp": timestamp,
-    }
-    insert_into_mongodb(log_entry, config['DEFAULT']['mongodb_uri'], config['DEFAULT']['mongodb_log_database'],
-                        config['DEFAULT']['mongodb_log_History_collection'], logger)
-
-
-# Activity info logging
-def log_activity_info(activity_id, total_files, passed_files, failed_files, total_xml_size, total_pdf_size,
-                      activity_start_time, activity_end_time, logger):
-    log_entry = {
-        "activity_id": activity_id,
-        "total_files": total_files,
-        "passed_files": passed_files,
-        "failed_files": failed_files,
-        "total_xml_size": total_xml_size,
-        "total_pdf_size": total_pdf_size,
-        "activity_start_time": activity_start_time,
-        "activity_end_time": activity_end_time
-    }
-    insert_into_mongodb(log_entry, config['DEFAULT']['mongodb_uri'], config['DEFAULT']['mongodb_log_database'],
-                        config['DEFAULT']['mongodb_log_activity_info_collection'], logger)
-
-    logger.info(log_entry)
-
-
-# Log events for each record
-def log_events(activity_id, pair_name, log_entries, dhr_id, logger):
-    event_id = get_next_id('event_id', logger)
-    log_entry = {
-        "events_id": event_id,
-        'dhr_id': dhr_id,
-        "pair_name": pair_name,
-        "log": log_entries,
-        "timestamp": datetime.now().isoformat(),
-        "activity_id": activity_id
-    }
-    insert_into_mongodb(log_entry, config['DEFAULT']['mongodb_uri'], config['DEFAULT']['mongodb_log_database'],
-                        config['DEFAULT']['mongodb_log_pair_history_collection'], logger)
-
-
-# S3 info logging
-def log_s3_info(activity_id, pair_name, s3_key, dhr_id, logger):
-    log_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "activity_id": activity_id,
-        'dhr_id': dhr_id,
-        "pair_name": pair_name,
-        "s3_key": s3_key
-    }
-    insert_into_mongodb(log_entry, config['DEFAULT']['mongodb_uri'], config['DEFAULT']['mongodb_log_database'],
-                        config['DEFAULT']['mongodb_log_s3_collection'], logger)
-
-
-def read_properties(file_path):
-    config = configparser.ConfigParser()
-    config.read(file_path)
-    return config
-
-
-config = read_properties(properties_path)
-
-
-def validate_xml(xml_file, xsd_file, logger):
-    try:
-        # Read and parse the XSD schema
-        with open(xsd_file, 'rb') as xsd:
-            schema_root = etree.XML(xsd.read())
-        schema = etree.XMLSchema(schema_root)
-
-        # Read and parse the XML file as bytes to avoid encoding issues
-        with open(xml_file, 'rb') as xml:
-            xml_doc = etree.parse(xml)
-
-        # Validate the XML file against the schema
-        schema.assertValid(xml_doc)
-
-        logger.info(f"Validation successful for XML file: {xml_file}")
-        return True
-
-    except (etree.XMLSyntaxError, etree.DocumentInvalid) as e:
-        logger.error(f"Validation failed for XML file: {xml_file}. Error: {e}")
-        return False
-
-
-def validate_json(json_file, logger):
-    try:
-        with open(json_file, 'r') as file:
-            json_data = json.load(file)
-        logger.info(f"Validation successful for JSON file: {json_file}")
-        return True
-    except json.JSONDecodeError as e:
-        logger.error(f"Validation failed for JSON file: {json_file}. Error: {e}")
-        return False
-
-
-def validate_csv(csv_file, logger):
-    try:
-        with open(csv_file, 'r') as file:
-            reader = csv.reader(file)
-            for row in reader:
-                pass  # Just read through the file to check for errors
-        logger.info(f"Validation successful for CSV file: {csv_file}")
-        return True
-    except csv.Error as e:
-        logger.error(f"Validation failed for CSV file: {csv_file}. Error: {e}")
-        return False
-
-
-def validate_files(data_file, pdf_file, logger):
-    try:
-        if not os.path.exists(data_file):
-            raise FileNotFoundError(f"Data file {data_file} not found.")
-        if not os.path.exists(pdf_file):
-            raise FileNotFoundError(f"PDF file {pdf_file} not found.")
-
-        file_ext = os.path.splitext(data_file)[1].lower()
-
-        if file_ext == '.xml':
-            if validate_xml(data_file, xsd_path, logger):
-                logger.info(f"Validation successful for pair: {data_file} and {pdf_file}")
-                return True
-            else:
-                raise Exception("XML validation failed")
-        elif file_ext == '.json':
-            if validate_json(data_file, logger):
-                logger.info(f"Validation successful for pair: {data_file} and {pdf_file}")
-                return True
-            else:
-                raise Exception("JSON validation failed")
-        elif file_ext == '.csv':
-            if validate_csv(data_file, logger):
-                logger.info(f"Validation successful for pair: {data_file} and {pdf_file}")
-                return True
-            else:
-                raise Exception("CSV validation failed")
-        else:
-            raise Exception(f"Unsupported file type: {file_ext}")
-    except Exception as e:
-        logger.error(f"Validation failed for pair: {data_file} and {pdf_file}. Error: {e}")
-        return False
-
-
-def extract_and_transform(data_file, pdf_file, activity_id, logger):
-    try:
-        base_name, ext = os.path.splitext(data_file)
-
-        if ext == '.xml':
-            with open(data_file) as f:
-                xml_content = f.read()
-                document_content = xmltodict.parse(xml_content).get('document', {})
-
-        elif ext == '.json':
-            with open(data_file) as f:
-                raw_data = json.load(f)
-
-            # Extract the relevant fields from the original structure
-            document = raw_data.get("Documents", [])[0]  # Assuming there's at least one document
-            fields = document.get("Fields", {})
-
-            # Parse the date and reformat it to YYYYMMDD
-            original_date = fields.get("Date_of_Manufacture", "")
-            try:
-                date_of_manufacture = datetime.strptime(original_date, "%d-%b-%Y").strftime("%Y%m%d")
-            except ValueError:
-                date_of_manufacture = original_date  # If parsing fails, use the original value
-
-            # Create the new structure
-            document_content = {
-                "BatchID": raw_data.get("BatchID", ""),
-                "DocumentID": document.get("DocumentID", ""),
-                "DocumentUUID": document.get("DocumentUUID", ""),
-                "Material": fields.get("Material", ""),
-                "Batch": fields.get("Batch", ""),
-                "Production_Order": fields.get("Production_Order", ""),
-                "Material_Description": fields.get("Material_Description", ""),
-                "Date_of_Manufacture": date_of_manufacture
-            }
-
-        elif ext == '.csv':
-            document_content = []
-            with open(data_file, newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    document_content.append(row)
-
-        else:
-            raise Exception(f"Unsupported file format: {ext}")
-
-        json_data = {
-            "document": document_content,
-            "LINK": [
-                {
-                    "ARCHIV_ID": "penang",
-                    "AR_DATE": datetime.now().strftime("%Y%m%d"),
-                    "AR_OBJECT": "penang",
-                    "ARC_DOC_ID": get_next_id("arc_doc_id", logger),
-                    "RESERVE": "PDF",
-                    "FILENAME": os.path.basename(pdf_file)
-                }
-            ],
-            "INSTANCE": "DEV",
-            "SESSION": "penang",
-            "ARCHIVEKEY": "penang",
-            "OBJECT": "penang",
-            "OFFSET": get_next_id("offset", logger),
-            "ACTIVITY_ID": activity_id
+# Custom CSS with more styling
+st.markdown("""
+    <style>
+        .main {
+            padding: 2rem;
         }
+        .stMetric {
+            background: linear-gradient(to right, #4CAF50, #45a049);
+            padding: 1rem;
+            border-radius: 10px;
+            color: white;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .stButton>button {
+            background-color: #4CAF50;
+            color: white;
+            border-radius: 5px;
+            padding: 0.5rem 1rem;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .stButton>button:hover {
+            background-color: #45a049;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+        .section-header {
+            padding: 1rem;
+            background: #f8f9fa;
+            border-radius: 10px;
+            margin: 1rem 0;
+        }
+        .dataframe {
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .sidebar .sidebar-content {
+            background: #2c3e50;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-        logger.info(f"Data extraction and transformation successful for: {data_file}")
-        return json_data
 
+# Load configuration
+@st.cache_resource
+def load_config():
+    try:
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'props.properties')
+        if not os.path.exists(config_path):
+            st.error("⚠️ Configuration file not found!")
+            st.stop()
+        config = configparser.ConfigParser()
+        config.read(config_path)
+        return config
     except Exception as e:
-        logger.error(f"Data extraction and transformation failed for: {data_file}. Error: {e}")
-        logger.error(traceback.format_exc())
+        st.error(f"⚠️ Error loading configuration: {e}")
+        st.stop()
+
+
+# Initialize MongoDB
+@st.cache_resource
+def init_mongodb(_config):
+    try:
+        client = MongoClient(_config['DEFAULT']['mongodb_uri'])
+        client.admin.command('ping')
+        return client
+    except Exception as e:
+        st.error(f"⚠️ MongoDB Connection Failed: {e}")
         return None
 
 
-def initialize_cloudinary(config):
-    """Initialize Cloudinary with credentials"""
+# Load config and initialize MongoDB
+config = load_config()
+client = init_mongodb(config)
+
+if not client:
+    st.error("⚠️ Database connection failed!")
+    st.stop()
+
+# Initialize databases
+db = client[config['DEFAULT']['mongodb_database']]
+log_db = client[config['DEFAULT']['mongodb_log_database']]
+
+
+# Add this helper function at the top level
+def normalize_link_field(df):
+    """Normalize the LINK field in the dataframe"""
     try:
-        cloudinary.config(
-            cloud_name=config['DEFAULT']['cloudinary_cloud_name'],
-            api_key=config['DEFAULT']['cloudinary_api_key'],
-            api_secret=config['DEFAULT']['cloudinary_api_secret']
+        # Convert LINK field to string representation if it exists
+        if 'LINK' in df.columns:
+            df['LINK'] = df['LINK'].apply(lambda x: str(x) if x is not None else '')
+        return df
+    except Exception as e:
+        st.error(f"Error normalizing LINK field: {e}")
+        return df
+
+
+# Sidebar Navigation
+with st.sidebar:
+    # Logo/Header Section
+    st.markdown("""
+        <div style='text-align: center; padding: 1rem;'>
+            <h2 style='color: #4CAF50;'>
+                <span style='font-size: 2rem;'>🔄</span><br>
+                DataSyncX
+            </h2>
+            <p style='color: #666; font-size: 0.8rem;'>Monitoring Dashboard</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Navigation Menu
+    selected = option_menu(
+        menu_title=None,
+        options=["Dashboard", "Processing History", "Activity Info", "DHR Documents", "S3 Logs", "Settings"],
+        icons=['speedometer2', 'clock-history', 'activity', 'folder', 'cloud-upload', 'gear'],
+        menu_icon="cast",
+        default_index=0,
+        styles={
+            "container": {"padding": "0!important", "background-color": "#fafafa"},
+            "icon": {"color": "#4CAF50", "font-size": "1rem"},
+            "nav-link": {"font-size": "0.9rem", "text-align": "left", "margin": "0px"},
+            "nav-link-selected": {"background-color": "#4CAF50"},
+        }
+    )
+
+    # Additional Sidebar Info
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("""
+        <div style='padding: 1rem; background: #f1f1f1; border-radius: 10px;'>
+            <h4 style='color: #333;'>System Status</h4>
+            <p style='color: #666; font-size: 0.8rem;'>
+                🟢 Database Connected<br>
+                📁 File System Active<br>
+                ☁️ S3 Storage Ready
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Version Info
+    st.sidebar.markdown("""
+        <div style='position: fixed; bottom: 0; padding: 1rem;'>
+            <p style='color: #666; font-size: 0.7rem;'>
+                DataSyncX Monitor v1.0<br>
+                © 2024 All rights reserved
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+# Main Content
+if selected == "Dashboard":
+    # Header
+    st.title("📊 DataSyncX Dashboard")
+
+    # Metrics Row
+    st.subheader("📈 Key Metrics")
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        try:
+            total_docs = db[config['DEFAULT']['mongodb_collection']].count_documents({})
+            st.metric("📑 Total Processed Documents", f"{total_docs:,}")
+        except Exception as e:
+            st.metric("📑 Total Documents", "Error")
+
+    with col2:
+        try:
+            activity_info = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_activity_info_collection']].find()))
+            if not activity_info.empty:
+                success_rate = (activity_info['passed_files'].sum() / activity_info['total_files'].sum() * 100)
+                st.metric("✅ Success Rate", f"{success_rate:.1f}%")
+        except Exception as e:
+            st.metric("✅ Success Rate", "Error")
+
+    with col3:
+        try:
+            pickup_folder = config['DEFAULT']['pickup_folder']
+            if os.path.exists(pickup_folder):
+                files = [f for f in os.listdir(pickup_folder) if os.path.isfile(os.path.join(pickup_folder, f))]
+                st.metric("📁 Files in Pickup", len(files))
+        except Exception as e:
+            st.metric("📁 Files in Pickup", "Error")
+
+    # Charts Section
+    st.subheader("📊 Processing Statistics")
+
+    try:
+        if not activity_info.empty:
+            tab1, tab2 = st.tabs(["📈 Processing Trends", "📊 Size Analysis"])
+
+            with tab1:
+                fig1 = px.line(activity_info,
+                               x='activity_id',
+                               y='total_files',
+                               title='Files Processed Over Time',
+                               markers=True)
+                fig1.update_layout(
+                    template='plotly_white',
+                    xaxis_title="Activity ID",
+                    yaxis_title="Total Files"
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+
+            with tab2:
+                fig2 = px.bar(activity_info,
+                              x='activity_id',
+                              y=['total_xml_size', 'total_pdf_size'],
+                              title='File Size Distribution',
+                              barmode='group')
+                fig2.update_layout(
+                    template='plotly_white',
+                    xaxis_title="Activity ID",
+                    yaxis_title="Size (bytes)"
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error creating charts: {e}")
+
+    # Dashboard Visualizations
+    st.markdown("### 📊 Processing Analytics")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Processing Timeline using activity_start_time
+        try:
+            # Convert activity_start_time to datetime if it's not already
+            activity_info['activity_start_time'] = pd.to_datetime(activity_info['activity_start_time'])
+
+            # Create timeline chart
+            fig1 = px.line(activity_info,
+                           x='activity_start_time',
+                           y='total_files',
+                           title='Processing Volume Over Time',
+                           labels={
+                               'activity_start_time': 'Processing Time',
+                               'total_files': 'Number of Files'
+                           })
+
+            fig1.update_layout(
+                xaxis_title="Processing Time",
+                yaxis_title="Number of Files",
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig1, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error creating timeline chart: {str(e)}")
+
+    with col2:
+        # Success/Failure Ratio
+        try:
+            success_data = pd.DataFrame({
+                'Status': ['Passed', 'Failed'],
+                'Count': [
+                    activity_info['passed_files'].sum(),
+                    activity_info['failed_files'].sum()
+                ]
+            })
+
+            fig2 = px.pie(success_data,
+                          values='Count',
+                          names='Status',
+                          title='Processing Success Rate',
+                          color='Status',
+                          color_discrete_map={
+                              'Passed': '#4CAF50',
+                              'Failed': '#f44336'
+                          })
+
+            fig2.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig2, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error creating pie chart: {str(e)}")
+
+    try:
+        # Get data from your MongoDB collection
+        original_data = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_history_collection']].find()))
+
+        # Display filters
+        with st.expander("🔍 Filters", expanded=True):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                # Date Range Filter
+                date_range = st.date_input(
+                    "📅 Select Date Range",
+                    value=(datetime.now() - timedelta(days=7), datetime.now()),
+                    key="history_date_filter"
+                )
+
+            with col2:
+                # Activity Filter
+                try:
+                    activity_ids = list(
+                        log_db[config['DEFAULT']['mongodb_log_activity_info_collection']].distinct('activity_id'))
+                    if activity_ids:
+                        selected_activity = st.selectbox(
+                            "🔖 Select Activity ID",
+                            activity_ids,
+                            key="history_activity_filter"
+                        )
+                    else:
+                        st.info("No activities found")
+                        selected_activity = None
+                except Exception as e:
+                    st.error(f"Error loading activities: {e}")
+                    selected_activity = None
+
+            with col3:
+                # Status Filter - Updated to use status_id
+                try:
+                    # Get unique status_ids from the history collection
+                    status_ids = ['All'] + sorted(
+                        list(log_db[config['DEFAULT']['mongodb_log_history_collection']].distinct('status')))
+                    selected_status = st.selectbox(
+                        "⚡ Status",
+                        status_ids,
+                        key="history_status_filter"
+                    )
+                except Exception as e:
+                    st.error(f"Error loading status IDs: {e}")
+                    selected_status = 'All'
+
+        # Apply filters to the data
+        filtered_data = original_data.copy()
+
+        # Apply date filter
+        if 'timestamp' in filtered_data.columns:
+            filtered_data['timestamp'] = pd.to_datetime(filtered_data['timestamp'])
+            mask = (filtered_data['timestamp'].dt.date >= date_range[0]) & \
+                   (filtered_data['timestamp'].dt.date <= date_range[1])
+            filtered_data = filtered_data[mask]
+
+        # Apply activity filter
+        if selected_activity:
+            filtered_data = filtered_data[filtered_data['activity_id'] == selected_activity]
+
+        # Apply status filter - Updated to use status_id
+        if selected_status != 'All':
+            filtered_data = filtered_data[filtered_data['status'] == selected_status]
+
+        # Display summary metrics
+        st.markdown("### 📊 Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Records", len(filtered_data))
+        with col2:
+            st.metric("Date Range", f"{date_range[0]} to {date_range[1]}")
+        with col3:
+            st.metric("Selected Activity", selected_activity if selected_activity else "All")
+        with col4:
+            st.metric("Status ID", selected_status)
+
+        # Display the filtered data
+        st.markdown("### 📋 Filtered Records")
+        st.dataframe(
+            filtered_data,
+            use_container_width=True,
+            height=400
         )
-        # Test configuration
-        cloudinary.api.ping()
-        return True
+
+        # Export Option
+        if st.button("📥 Export Filtered Data"):
+            csv = filtered_data.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"filtered_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+
     except Exception as e:
-        print(f"Failed to initialize Cloudinary: {e}")
-        return False
+        st.error(f"Error processing data: {str(e)}")
+        with st.expander("View Error Details"):
+            st.code(traceback.format_exc())
 
 
-def upload_to_cloudinary(pdf_file, key, logger):
+
+elif selected == "Processing History":
+    st.markdown('<h1 style="color: #333;">📜 Processing History</h1>', unsafe_allow_html=True)
+
     try:
-        # Upload the file
-        result = cloudinary.uploader.upload(
-            pdf_file,
-            public_id=f'attachments/{key}',
-            resource_type="auto",
-            folder="datasyncx"  # Optional: organize files in folders
-        )
+        # Fetch the history data
+        pair_history = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_pair_history_collection']].find()))
 
-        # Get the secure URL
-        download_url = result['secure_url']
+        if not pair_history.empty:
+            # Debug info
+            st.write("Available columns:", pair_history.columns.tolist())
 
-        logger.info(f"PDF file uploaded to Cloudinary: {pdf_file} at {download_url}")
-        return download_url
-    except Exception as e:
-        logger.error(f"PDF file upload to Cloudinary failed for: {pdf_file}. Error: {e}")
-        return None
+            # Add filters section
+            st.markdown(
+                '<div style="background-color: #f8f9fa; padding: 1rem; border-radius: 10px; margin-bottom: 1rem;">',
+                unsafe_allow_html=True)
 
+            col1, col2, col3 = st.columns(3)
 
-def insert_into_mongodb(json_data, mongodb_uri, mongodb_database, mongodb_collection, logger):
-    try:
-        client = MongoClient(mongodb_uri)
-        db = client[mongodb_database]
-        collection = db[mongodb_collection]
-        collection.insert_one(json_data)
-        if db == "CDNDEV":
-            logger.info("Json data has been inserted into MongoDB")
-    except Exception as e:
-        logger.error(f"Data insertion into MongoDB failed. Error: {e}")
+            with col1:
+                # Date filter
+                st.markdown('<p style="color: #333; font-weight: 500;">📅 Date Range</p>', unsafe_allow_html=True)
+                date_filter = st.date_input(
+                    "",
+                    value=(datetime.now() - timedelta(days=7), datetime.now())
+                )
 
+            with col2:
+                # Activity ID filter
+                if 'activity_id' in pair_history.columns:
+                    st.markdown('<p style="color: #333; font-weight: 500;">🔖 Activity ID</p>', unsafe_allow_html=True)
+                    activity_ids = ['All'] + sorted(pair_history['activity_id'].unique().tolist())
+                    selected_activity = st.selectbox("", activity_ids)
+                else:
+                    st.warning("Activity ID field not found")
+                    selected_activity = 'All'
 
-def send_email(subject, body, config, logger):
-    try:
-        smtp_server = config['DEFAULT']['smtp_server']
-        smtp_port = config['DEFAULT']['smtp_port']
-        smtp_user = config['DEFAULT']['smtp_username']
-        smtp_password = config['DEFAULT']['smtp_password']
-        recipient_email = config['DEFAULT']['email_to']
+            with col3:
+                # DHR ID filter
+                if 'dhr_id' in pair_history.columns:
+                    st.markdown('<p style="color: #333; font-weight: 500;">🔍 DHR ID</p>', unsafe_allow_html=True)
+                    dhr_ids = ['All'] + sorted(pair_history['dhr_id'].unique().tolist())
+                    selected_dhr = st.selectbox("", dhr_ids)
+                else:
+                    st.warning("DHR ID field not found")
+                    selected_dhr = 'All'
 
-        msg = MIMEMultipart()
-        msg['From'] = smtp_user
-        msg['To'] = recipient_email
-        msg['Subject'] = subject
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        msg.attach(MIMEText(body, 'plain'))
+            # Apply filters
+            filtered_history = pair_history.copy()
 
-        logger.info(f"Connecting to SMTP server {smtp_server}:{smtp_port}")
+            # Convert timestamp to datetime if it exists
+            if 'timestamp' in filtered_history.columns:
+                filtered_history['timestamp'] = pd.to_datetime(filtered_history['timestamp'])
 
-        if smtp_port == '465':
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-            logger.info("Using SSL for secure connection")
+                # Apply date filter
+                mask = (filtered_history['timestamp'].dt.date >= date_filter[0]) & \
+                       (filtered_history['timestamp'].dt.date <= date_filter[1])
+                filtered_history = filtered_history[mask]
+
+            # Apply other filters
+            if selected_activity != 'All' and 'activity_id' in filtered_history.columns:
+                filtered_history = filtered_history[filtered_history['activity_id'] == selected_activity]
+
+            if selected_dhr != 'All' and 'dhr_id' in filtered_history.columns:
+                filtered_history = filtered_history[filtered_history['dhr_id'] == selected_dhr]
+
+            # Display summary metrics
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📊 Summary</h3>', unsafe_allow_html=True)
+            metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+            with metric_col1:
+                total_records = len(filtered_history)
+                st.metric("Total Records", f"{total_records:,}")
+
+            with metric_col2:
+                if 'dhr_id' in filtered_history.columns:
+                    unique_dhrs = filtered_history['dhr_id'].nunique()
+                    st.metric("Unique DHRs", f"{unique_dhrs:,}")
+                else:
+                    st.metric("Unique DHRs", "N/A")
+
+            # Display the data
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📋 Records</h3>', unsafe_allow_html=True)
+
+            # Format timestamp if it exists
+            display_history = filtered_history.copy()
+            if 'timestamp' in display_history.columns:
+                display_history['timestamp'] = display_history['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Display the dataframe
+            st.dataframe(
+                display_history,
+                use_container_width=True,
+                height=400,
+            )
+
+            # Export functionality
+            st.markdown("---")
+            if st.button("📥 Export to CSV"):
+                csv = display_history.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"processing_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+
         else:
-            server = smtplib.SMTP(smtp_server, smtp_port)
-            logger.info("Starting TLS for secure connection")
-            server.starttls()
-
-        server.login(smtp_user, smtp_password)
-
-        logger.info("Logged in to SMTP server")
-        text = msg.as_string()
-
-        logger.info("Sending email")
-        server.sendmail(smtp_user, recipient_email, text)
-
-        logger.info(f"Email sent to {recipient_email} with subject: {subject}")
-        server.quit()
+            st.info("No processing history available")
 
     except Exception as e:
-        logger.error(f"Failed to send email. Error: {e}")
+        st.error(f"Error loading history: {str(e)}")
+        with st.expander("View Error Details"):
+            st.code(f"""
+Error Type: {type(e).__name__}
+Error Message: {str(e)}
+Stack Trace:
+{traceback.format_exc()}
+            """)
 
+elif selected == "Activity Info":
+    st.markdown('<h1 style="color: #333;">📊 Activity Information</h1>', unsafe_allow_html=True)
 
-def process_files(activity_id, logger):
-    pickup_folder = f"{config['DEFAULT']['pickup_folder']}"
-    processed_folder = f"{config['DEFAULT']['processed_folder']}"
-    binary_folder = f"{config['DEFAULT']['binary_folder']}"
-    error_folder = config['DEFAULT']['error_folder']
-
-    total_files = 0
-    passed_files = 0
-    failed_files = 0
-    total_xml_size = 0
-    total_pdf_size = 0
-
-    for filename in os.listdir(pickup_folder):
-        base_name, ext = os.path.splitext(filename)
-        pdf_file = os.path.join(pickup_folder, f"{base_name}.pdf")
-
-        if ext in ['.xml', '.json', '.csv']:
-            total_files += 1
-            data_file = os.path.join(pickup_folder, filename)
-            pair_logs = []
-            dhr_id = get_next_id("dhr_id", logger)
-            logger.info(f"Assigned DHR ID {dhr_id} for the pair: {base_name}")
-            try:
-                # Start timing the processing of the pair
-                start_time = datetime.now()
-
-                # Validation
-                if not validate_files(data_file, pdf_file, logger):
-                    raise Exception(f"Validation failed for pair: {data_file} and {pdf_file}")
-
-                pair_logs.append(f"Validation successful for pair: {data_file} and {pdf_file}")
-
-                # Extraction and Transformation
-                json_data = extract_and_transform(data_file, pdf_file, activity_id, logger)
-                if not json_data:
-                    raise Exception(f"Data extraction and transformation failed for: {data_file}")
-
-                pair_logs.append(f"Data extraction and transformation successful for: {data_file}")
-
-                # Replace S3 Upload section with Cloudinary upload
-                key = json_data["LINK"][0]["ARC_DOC_ID"]
-                binary_file = os.path.join(binary_folder, key + "_data")
-                shutil.copy(pdf_file, binary_file)
-
-                cloudinary_url = upload_to_cloudinary(binary_file, key, logger)
-                if not cloudinary_url:
-                    raise Exception(f"Failed to upload to Cloudinary for: {pdf_file}")
-
-                # Update the JSON data with the Cloudinary URL
-                json_data["LINK"] = cloudinary_url
-
-                pair_logs.append(f"PDF file uploaded to Cloudinary: {pdf_file} at {cloudinary_url}")
-
-                # MongoDB Insertion
-                insert_into_mongodb(json_data, config['DEFAULT']['mongodb_uri'], config['DEFAULT']['mongodb_database'],
-                                    config['DEFAULT']['mongodb_collection'], logger)
-                pair_logs.append("Json data has been inserted into MongoDB")
-
-                # Updating Sizes and Moving Files
-                xml_size = os.path.getsize(data_file)
-                pdf_size = os.path.getsize(pdf_file)
-                total_xml_size += xml_size
-                total_pdf_size += pdf_size
-                shutil.move(data_file, os.path.join(processed_folder, filename))
-                shutil.move(pdf_file, os.path.join(processed_folder, f"{base_name}.pdf"))
-                logger.info(f"Backed Up files {data_file} and {pdf_file} to processed folder")
-                pair_logs.append(f"Backed Up {data_file} and {pdf_file} to processed folder")
-                passed_files += 1
-
-                # Log the size and processing time for the pair
-                end_time = datetime.now()
-                processing_time = (end_time - start_time).total_seconds()
-                pair_logs.append(f"Pair processing time: {processing_time} seconds")
-                logger.info(f"Pair processing time: {processing_time} seconds")
-                pair_logs.append(f"XML size: {xml_size} bytes, PDF size: {pdf_size} bytes")
-                logger.info(f"XML size: {xml_size} bytes, PDF size: {pdf_size} bytes")
-
-                # Logging Pair History and S3 Info
-                log_pair_history(activity_id, base_name, "Passed", end_time.isoformat(), dhr_id, logger)
-                log_s3_info(activity_id, base_name, cloudinary_url, dhr_id, logger)
-
-                logger.info(
-                    "_________________________________________________________________________________________________________________________________")
-
-            except Exception as e:
-                logger.error(f"Error processing pair: {data_file} and {pdf_file}. Error: {e}")
-                pair_logs.append(f"Error processing pair: {data_file} and {pdf_file}. Error: {e}")
-                pair_logs.append(traceback.format_exc())
-                log_pair_history(activity_id, base_name, "Failed", datetime.now().isoformat(), dhr_id, logger)
-                failed_files += 1
-
-                logger.info(
-                    "_________________________________________________________________________________________________________________________________")
-
-            log_events(activity_id, base_name, pair_logs, dhr_id, logger)
-
-    return total_files, passed_files, failed_files, total_xml_size, total_pdf_size
-
-
-def process_activity(activity_id):
-    logger = setup_logger(activity_id)
-    logger.info(f"Starting process activity with ID: {activity_id}")
-    activity_start_time = datetime.now().isoformat()
     try:
-        total_files, passed_files, failed_files, total_xml_size, total_pdf_size = process_files(activity_id, logger)
-        activity_end_time = datetime.now().isoformat()
-        log_activity_info(activity_id, total_files, passed_files, failed_files, total_xml_size, total_pdf_size,
-                          activity_start_time, activity_end_time, logger)
-        logger.info(f"Process activity {activity_id} completed successfully.")
+        activity_info = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_activity_info_collection']].find()))
 
-        # Prepare email content
-        subject = f"Activity {activity_id} Completed"
-        body = (f"Activity ID: {activity_id}\n"
-                f"Total Files: {total_files}\n"
-                f"Passed Files: {passed_files}\n"
-                f"Failed Files: {failed_files}\n"
-                f"Total XML Size: {total_xml_size} bytes\n"
-                f"Total PDF Size: {total_pdf_size} bytes\n"
-                f"Activity Start Time: {activity_start_time}\n"
-                f"Activity End Time: {activity_end_time}\n")
+        if not activity_info.empty:
+            # Debug: Show available columns
+            st.write("Available columns:", activity_info.columns.tolist())
 
-        # Send email
-        send_email(subject, body, config, logger)
+            # Filters Section
+            with st.expander("🔍 Filters", expanded=True):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # Date Range Filter
+                    st.markdown('<p style="color: #333; font-weight: 500;">📅 Date Range</p>', unsafe_allow_html=True)
+                    date_filter = st.date_input(
+                        "",
+                        value=(datetime.now() - timedelta(days=7), datetime.now())
+                    )
+
+                with col2:
+                    # Activity ID Filter
+                    if 'activity_id' in activity_info.columns:
+                        st.markdown('<p style="color: #333; font-weight: 500;">🔖 Activity ID</p>',
+                                    unsafe_allow_html=True)
+                        activity_ids = ['All'] + sorted(activity_info['activity_id'].unique().tolist())
+                        selected_activity = st.selectbox("", activity_ids)
+                    else:
+                        selected_activity = 'All'
+
+            # Apply filters
+            filtered_activity_info = activity_info.copy()
+
+            # Convert timestamp if it exists
+            if 'timestamp' in filtered_activity_info.columns:
+                filtered_activity_info['timestamp'] = pd.to_datetime(filtered_activity_info['timestamp'])
+
+                # Apply date filter
+                mask = (filtered_activity_info['timestamp'].dt.date >= date_filter[0]) & \
+                       (filtered_activity_info['timestamp'].dt.date <= date_filter[1])
+                filtered_activity_info = filtered_activity_info[mask]
+
+            # Apply activity filter
+            if selected_activity != 'All' and 'activity_id' in filtered_activity_info.columns:
+                filtered_activity_info = filtered_activity_info[
+                    filtered_activity_info['activity_id'] == selected_activity]
+
+            # Display summary metrics
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📊 Summary</h3>', unsafe_allow_html=True)
+
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+
+            with metric_col1:
+                total_records = len(filtered_activity_info)
+                st.metric("Total Records", f"{total_records:,}")
+
+            with metric_col2:
+                if 'activity_id' in filtered_activity_info.columns:
+                    unique_activities = filtered_activity_info['activity_id'].nunique()
+                    st.metric("Unique Activities", f"{unique_activities:,}")
+
+            with metric_col3:
+                if 'file_size' in filtered_activity_info.columns:
+                    total_size = filtered_activity_info['file_size'].sum() / (1024 * 1024)  # Convert to MB
+                    st.metric("Total Size", f"{total_size:.2f} MB")
+
+            # Display the data
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📋 Records</h3>', unsafe_allow_html=True)
+
+            # Format timestamp for display
+            display_activity_info = filtered_activity_info.copy()
+            if 'timestamp' in display_activity_info.columns:
+                display_activity_info['timestamp'] = display_activity_info['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Display as a table
+            st.dataframe(
+                display_activity_info,
+                use_container_width=True,
+                height=400
+            )
+
+            # Export functionality
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("📥 Export to CSV"):
+                    csv = display_activity_info.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv,
+                        file_name=f"activity_info_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+
+
+
+        else:
+            st.info("No activity information available")
 
     except Exception as e:
-        logger.error(f"Process activity {activity_id} failed. Error: {e}")
-        logger.error(traceback.format_exc())
-        activity_end_time = datetime.now().isoformat()
-        log_activity_info(activity_id, 0, 0, 0, 0, 0, activity_start_time, activity_end_time, logger)
+        st.error(f"Error loading activity information: {str(e)}")
+        with st.expander("View Error Details"):
+            st.code(f"""
+Error Type: {type(e).__name__}
+Error Message: {str(e)}
+Available Columns: {activity_info.columns.tolist() if 'activity_info' in locals() and not activity_info.empty else 'No data'}
+Stack Trace:
+{traceback.format_exc()}
+            """)
 
-        # Prepare email content for failure
-        subject = f"Activity {activity_id} Failed"
-        body = (f"Activity ID: {activity_id}\n"
-                f"An error occurred during the processing.\n"
-                f"Error: {e}\n"
-                f"Traceback: {traceback.format_exc()}\n"
-                f"Activity Start Time: {activity_start_time}\n"
-                f"Activity End Time: {activity_end_time}\n")
+elif selected == "DHR Documents":
+    st.markdown('<h1 style="color: #333;">📁 DHR Documents</h1>', unsafe_allow_html=True)
 
-        # Send email
-        send_email(subject, body, config, logger)
+    try:
+        dhr_documents = pd.DataFrame(list(db[config['DEFAULT']['mongodb_collection']].find()))
+
+        if not dhr_documents.empty:
+            dhr_documents = normalize_link_field(dhr_documents)
 
 
-if __name__ == "__main__":
-    activity_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            # Extract download URL and create direct download link
+            def create_download_link(link_str):
+                try:
+                    if isinstance(link_str, str) and 'cloudinary.com' in link_str:
+                        # Extract URL using string manipulation
+                        start = link_str.find("'DOWNLOAD_URL': '") + len("'DOWNLOAD_URL': '")
+                        end = link_str.find("'", start)
+                        url = link_str[start:end]
+                        # Modify URL to force download
+                        if url:
+                            # Add Cloudinary parameters to force download
+                            url = url.replace('/upload/', '/upload/fl_attachment/')
+                            # Add Content-Disposition header
+                            filename = url.split('/')[-1]
+                            url = f"{url}?attachment={filename}"
+                        return url
+                    return None
+                except:
+                    return None
 
-    # Initialize Cloudinary before processing
-    if initialize_cloudinary(config):
-        process_activity(activity_id)
-    else:
-        print("Failed to initialize Cloudinary. Exiting...")
-        sys.exit(1)
+
+            # Add download URL column
+            if 'LINK' in dhr_documents.columns:
+                dhr_documents['download_url'] = dhr_documents['LINK'].apply(create_download_link)
+
+            # Filters Section
+            with st.expander("🔍 Filters", expanded=True):
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    # Date Range Filter
+                    st.markdown('<p style="color: #333; font-weight: 500;">📅 Date Range</p>', unsafe_allow_html=True)
+                    date_filter = st.date_input(
+                        "",
+                        value=(datetime.now() - timedelta(days=7), datetime.now())
+                    )
+
+                with col2:
+                    # Activity ID Filter
+                    if 'ACTIVITY_ID' in dhr_documents.columns:
+                        st.markdown('<p style="color: #333; font-weight: 500;">🔖 Activity ID</p>',
+                                    unsafe_allow_html=True)
+                        activity_ids = ['All'] + sorted(list(dhr_documents['ACTIVITY_ID'].unique()))
+                        selected_activity = st.selectbox(
+                            "",  # Empty label since we use markdown above
+                            activity_ids,
+                            key="dhr_activity_filter"
+                        )
+                    else:
+                        st.warning("Activity ID field not found")
+                        selected_activity = 'All'
+
+                with col3:
+                    # OFFSET Filter
+                    if 'OFFSET' in dhr_documents.columns:
+                        st.markdown('<p style="color: #333; font-weight: 500;">🔍 OFFSET</p>', unsafe_allow_html=True)
+                        offset_values = ['All'] + sorted(list(dhr_documents['OFFSET'].unique()))
+                        selected_offset = st.selectbox(
+                            "",  # Empty label since we use markdown above
+                            offset_values,
+                            key="dhr_offset_filter"
+                        )
+                    else:
+                        st.warning("OFFSET field not found")
+                        selected_offset = 'All'
+
+            # Apply filters
+            filtered_dhr_documents = dhr_documents.copy()
+
+            # Apply date filter
+            if 'timestamp' in filtered_dhr_documents.columns:
+                filtered_dhr_documents['timestamp'] = pd.to_datetime(filtered_dhr_documents['timestamp'])
+                mask = (filtered_dhr_documents['timestamp'].dt.date >= date_filter[0]) & \
+                       (filtered_dhr_documents['timestamp'].dt.date <= date_filter[1])
+                filtered_dhr_documents = filtered_dhr_documents[mask]
+
+            # Apply activity filter
+            if selected_activity != 'All' and 'ACTIVITY_ID' in filtered_dhr_documents.columns:
+                filtered_dhr_documents = filtered_dhr_documents[
+                    filtered_dhr_documents['ACTIVITY_ID'] == selected_activity]
+
+            # Apply OFFSET filter
+            if selected_offset != 'All' and 'OFFSET' in filtered_dhr_documents.columns:
+                filtered_dhr_documents = filtered_dhr_documents[filtered_dhr_documents['OFFSET'] == selected_offset]
+
+            # Update metrics display
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📊 Summary</h3>', unsafe_allow_html=True)
+            metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+            with metric_col1:
+                total_records = len(filtered_dhr_documents)
+                st.metric("Total Records", f"{total_records:,}")
+
+            with metric_col2:
+                if 'ACTIVITY_ID' in filtered_dhr_documents.columns:
+                    unique_activities = filtered_dhr_documents['ACTIVITY_ID'].nunique()
+                    st.metric("Unique Activities", f"{unique_activities:,}")
+
+            with metric_col3:
+                if 'OFFSET' in filtered_dhr_documents.columns:
+                    unique_offsets = filtered_dhr_documents['OFFSET'].nunique()
+                    st.metric("Unique OFFSETs", f"{unique_offsets:,}")
+
+            with metric_col4:
+                st.metric("Date Range", f"{date_filter[0]} to {date_filter[1]}")
+
+            # Display the data
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📋 Records</h3>', unsafe_allow_html=True)
+
+            # Format timestamp for display
+            display_dhr_documents = filtered_dhr_documents.copy()
+            if 'timestamp' in display_dhr_documents.columns:
+                display_dhr_documents['timestamp'] = display_dhr_documents['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Move download_url to the first column if it exists
+            if 'download_url' in display_dhr_documents.columns:
+                cols = ['download_url'] + [col for col in display_dhr_documents.columns if col != 'download_url']
+                display_dhr_documents = display_dhr_documents[cols]
+
+            # Display as interactive table with download links
+            st.dataframe(
+                display_dhr_documents,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "download_url": st.column_config.LinkColumn(
+                        "Download PDF",
+                        help="Click to download PDF directly",
+                        validate="^https://.*",
+                        max_chars=100,
+                        display_text="⬇️ Download"
+                    ),
+                    "timestamp": st.column_config.DatetimeColumn(
+                        "Timestamp",
+                        format="DD/MM/YYYY HH:mm"
+                    ),
+                    "OFFSET": "DHR ID",
+                    "ACTIVITY_ID": "Activity ID",
+                    "LINK": st.column_config.TextColumn(
+                        "LINK",
+                        width="medium",
+                        help="Raw LINK data"
+                    )
+                }
+            )
+
+            # Export functionality
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("📥 Export to CSV"):
+                    csv = display_dhr_documents.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv,
+                        file_name=f"dhr_documents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+
+            with col2:
+                st.info("💡 Click the Download links or buttons to save PDFs directly")
+
+        else:
+            st.info("No DHR documents available")
+
+    except Exception as e:
+        st.error(f"Error loading DHR documents: {str(e)}")
+        with st.expander("View Error Details"):
+            st.code(f"""
+Error Type: {type(e).__name__}
+Error Message: {str(e)}
+Available Columns: {dhr_documents.columns.tolist() if 'dhr_documents' in locals() and not dhr_documents.empty else 'No data'}
+Stack Trace:
+{traceback.format_exc()}
+            """)
+
+
+elif selected == "S3 Logs":
+    st.markdown('<h1 style="color: #333;">☁️ S3 Storage Logs</h1>', unsafe_allow_html=True)
+
+    try:
+        s3_logs = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_s3_collection']].find()))
+
+        if not s3_logs.empty:
+            # Debug: Show available columns
+            st.write("Available columns:", s3_logs.columns.tolist())
+
+            # Filters Section
+            with st.expander("🔍 Filters", expanded=True):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # Date Range Filter
+                    st.markdown('<p style="color: #333; font-weight: 500;">📅 Date Range</p>', unsafe_allow_html=True)
+                    date_filter = st.date_input(
+                        "",
+                        value=(datetime.now() - timedelta(days=7), datetime.now())
+                    )
+
+                with col2:
+                    # Activity ID Filter
+                    if 'activity_id' in s3_logs.columns:
+                        st.markdown('<p style="color: #333; font-weight: 500;">🔖 Activity ID</p>',
+                                    unsafe_allow_html=True)
+                        activity_ids = ['All'] + sorted(s3_logs['activity_id'].unique().tolist())
+                        selected_activity = st.selectbox("", activity_ids)
+                    else:
+                        selected_activity = 'All'
+
+            # Apply filters
+            filtered_logs = s3_logs.copy()
+
+            # Convert timestamp if it exists
+            if 'timestamp' in filtered_logs.columns:
+                filtered_logs['timestamp'] = pd.to_datetime(filtered_logs['timestamp'])
+
+                # Apply date filter
+                mask = (filtered_logs['timestamp'].dt.date >= date_filter[0]) & \
+                       (filtered_logs['timestamp'].dt.date <= date_filter[1])
+                filtered_logs = filtered_logs[mask]
+
+            # Apply activity filter
+            if selected_activity != 'All' and 'activity_id' in filtered_logs.columns:
+                filtered_logs = filtered_logs[filtered_logs['activity_id'] == selected_activity]
+
+            # Display summary metrics
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📊 Summary</h3>', unsafe_allow_html=True)
+
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+
+            with metric_col1:
+                total_records = len(filtered_logs)
+                st.metric("Total Records", f"{total_records:,}")
+
+            with metric_col2:
+                if 'activity_id' in filtered_logs.columns:
+                    unique_activities = filtered_logs['activity_id'].nunique()
+                    st.metric("Unique Activities", f"{unique_activities:,}")
+
+            with metric_col3:
+                if 'file_size' in filtered_logs.columns:
+                    total_size = filtered_logs['file_size'].sum() / (1024 * 1024)  # Convert to MB
+                    st.metric("Total Size", f"{total_size:.2f} MB")
+
+            # Display the data
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📋 Records</h3>', unsafe_allow_html=True)
+
+            # Format timestamp for display
+            display_logs = filtered_logs.copy()
+            if 'timestamp' in display_logs.columns:
+                display_logs['timestamp'] = display_logs['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Display as a table
+            st.dataframe(
+                display_logs,
+                use_container_width=True,
+                height=400
+            )
+
+            # Export functionality
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("📥 Export to CSV"):
+                    csv = display_logs.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv,
+                        file_name=f"s3_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+
+
+
+        else:
+            st.info("No S3 logs available")
+
+    except Exception as e:
+        st.error(f"Error loading S3 logs: {str(e)}")
+        with st.expander("View Error Details"):
+            st.code(f"""
+Error Type: {type(e).__name__}
+Error Message: {str(e)}
+Available Columns: {s3_logs.columns.tolist() if 's3_logs' in locals() and not s3_logs.empty else 'No data'}
+Stack Trace:
+{traceback.format_exc()}
+            """)
+
+elif selected == "Settings":
+    st.title("⚙️ Settings")
+    st.write("Configuration settings will appear here")
+
+# Add metrics summary
+
+
+# Refresh Button (Fixed)
+if st.button("🔄 Refresh Data"):
+    st.cache_resource.clear()
+    st.rerun()
