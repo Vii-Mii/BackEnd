@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import traceback
 from io import BytesIO
+import certifi
 
 # Set page config must be the first Streamlit command
 st.set_page_config(
@@ -187,9 +188,19 @@ def load_config():
 @st.cache_resource
 def init_mongodb(_config):
     try:
-        client = MongoClient(_config['DEFAULT']['mongodb_uri'])
-        client.admin.command('ping')
-        return client
+        # Update MongoDB connection
+        try:
+            client = MongoClient(
+                _config['DEFAULT']['mongodb_uri'],
+                tls=True,
+                tlsCAFile=certifi.where()
+            )
+            # Test connection
+            client.admin.command('ping')
+            st.success("✅ Database connected!")
+        except Exception as e:
+            st.error(f"⚠️ Database connection failed: {e}")
+            return None
     except Exception as e:
         st.error(f"⚠️ MongoDB Connection Failed: {e}")
         return None
