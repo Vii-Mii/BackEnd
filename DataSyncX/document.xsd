@@ -4,14 +4,17 @@
     <xs:element name="document">
         <xs:complexType>
             <xs:sequence>
-                <!-- Definition of the 'name' element, which is a string -->
-                <xs:element name="name" type="xs:string"/>
-
-                <!-- Definition of the 'age' element, which is an integer -->
-                <xs:element name="age" type="xs:string"/>
-
-                <!-- Definition of the 'color' element, which is a string -->
-                <xs:element name="color" type="xs:string"/>
+                <!-- Definition of each element as a string -->
+                <xs:element name="batch_number" type="xs:string"/>
+                <xs:element name="production_order_number" type="xs:string"/>
+                <xs:element name="date_of_manufacture" type="xs:string"/>
+                <xs:element name="expiry_date" type="xs:string"/>
+                <xs:element name="serial_number" type="xs:string"/>
+                <xs:element name="device_model_number" type="xs:string"/>
+                <xs:element name="operator_id" type="xs:string"/>
+                <xs:element name="manufacturing_facility_id" type="xs:string"/>
+                <xs:element name="quality_inspection_results" type="xs:string"/>
+                <xs:element name="final_release_approval" type="xs:string"/>
             </xs:sequence>
         </xs:complexType>
     </xs:element>

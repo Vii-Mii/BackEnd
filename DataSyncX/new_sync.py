@@ -18,6 +18,8 @@ from email.mime.text import MIMEText
 import cloudinary
 import cloudinary.uploader
 import cloudinary.api
+import sib_api_v3_sdk
+from sib_api_v3_sdk.rest import ApiException
 
 def resource_path(relative_path):
     """ Get the absolute path to the resource, works for dev and for PyInstaller """
@@ -252,18 +254,18 @@ def extract_and_transform(data_file, pdf_file, activity_id, logger):
             "document": document_content,
             "LINK": [
                 {
-                    "ARCHIV_ID": "penang",
+                    "ARCHIV_ID": "DataSyncX1.0",
                     "AR_DATE": datetime.now().strftime("%Y%m%d"),
-                    "AR_OBJECT": "penang",
+                    "AR_OBJECT": "DataSyncX1.0",
                     "ARC_DOC_ID": get_next_id("arc_doc_id", logger),
                     "RESERVE": "PDF",
                     "FILENAME": os.path.basename(pdf_file)
                 }
             ],
             "INSTANCE": "DEV",
-            "SESSION": "penang",
-            "ARCHIVEKEY": "penang",
-            "OBJECT": "penang",
+            "SESSION": "DataSyncX1.0",
+            "ARCHIVEKEY": "DataSyncX1.0",
+            "OBJECT": "DataSyncX1.0",
             "OFFSET": get_next_id("offset", logger),
             "ACTIVITY_ID": activity_id
         }
@@ -321,44 +323,245 @@ def insert_into_mongodb(json_data, mongodb_uri, mongodb_database, mongodb_collec
     except Exception as e:
         logger.error(f"Data insertion into MongoDB failed. Error: {e}")
 
-def send_email(subject, body, config, logger):
+def log_email(activity_id, email_content, status, recipient, logger):
+    """
+    Log email details to MongoDB
+    
+    Args:
+        activity_id (str): The activity ID associated with the email
+        email_content (str): Content of the email
+        status (str): Status of the email (sent/failed)
+        recipient (str): Email recipient
+        logger: Logger instance
+    """
     try:
+        email_log = {
+            "activity_id": activity_id,
+            "email_content": email_content,
+            "sent_timestamp": datetime.now(),
+            "status": status,
+            "recipient": recipient
+        }
+        
+        # Use insert_into_mongodb instead of directly accessing log_db
+        insert_into_mongodb(
+            email_log,
+            config['DEFAULT']['mongodb_uri'],
+            config['DEFAULT']['mongodb_log_database'],
+            config['DEFAULT']['mongodb_log_email_collection'],
+            logger
+        )
+        logger.info(f"Email log saved successfully for activity {activity_id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to save email log for activity {activity_id}. Error: {e}")
+
+# Update the send_email function to include logging
+def send_email(subject, body, config, logger, activity_id=None):
+    try:
+        # Email setup
         smtp_server = config['DEFAULT']['smtp_server']
         smtp_port = config['DEFAULT']['smtp_port']
         smtp_user = config['DEFAULT']['smtp_username']
         smtp_password = config['DEFAULT']['smtp_password']
+        sender_email = config['DEFAULT']['email_from']
         recipient_email = config['DEFAULT']['email_to']
 
-        msg = MIMEMultipart()
-        msg['From'] = smtp_user
+        # Parse the body text into stats dictionary
+        stats = dict(line.split(': ', 1) for line in body.split('\n') if ': ' in line)
+        
+        # Create email message
+        msg = MIMEMultipart('alternative')
+        msg['From'] = sender_email
         msg['To'] = recipient_email
         msg['Subject'] = subject
 
+        # Add plain text and HTML parts
         msg.attach(MIMEText(body, 'plain'))
+        msg.attach(MIMEText(create_html_content(stats), 'html'))
 
-        logger.info(f"Connecting to SMTP server {smtp_server}:{smtp_port}")
-
-        if smtp_port == '465':
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-            logger.info("Using SSL for secure connection")
-        else:
-            server = smtplib.SMTP(smtp_server, smtp_port)
-            logger.info("Starting TLS for secure connection")
-            server.starttls()
-
+        # Send email
+        server = smtplib.SMTP(smtp_server, int(smtp_port))
+        server.starttls()
         server.login(smtp_user, smtp_password)
-
-        logger.info("Logged in to SMTP server")
-        text = msg.as_string()
-
-        logger.info("Sending email")
-        server.sendmail(smtp_user, recipient_email, text)
-
-        logger.info(f"Email sent to {recipient_email} with subject: {subject}")
+        server.sendmail(sender_email, recipient_email, msg.as_string())
+        
+        # Log successful email
+        if activity_id:
+            log_email(activity_id, body, "sent", recipient_email, logger)
+            
+        logger.info(f"Email sent successfully to {recipient_email}")
         server.quit()
 
     except Exception as e:
+        if activity_id:
+            log_email(activity_id, body, "failed", recipient_email, logger)
         logger.error(f"Failed to send email. Error: {e}")
+
+def create_html_content(stats):
+    # Calculate processing duration
+    try:
+        start_time = datetime.fromisoformat(stats.get('Activity Start Time', ''))
+        end_time = datetime.fromisoformat(stats.get('Activity End Time', ''))
+        duration = end_time - start_time
+        duration_str = str(duration).split('.')[0]  # Remove microseconds
+    except:
+        duration_str = "N/A"
+
+    # Calculate success rate
+    try:
+        total = int(stats.get('Total Files', 0))
+        passed = int(stats.get('Passed Files', 0))
+        failed_files = int(stats.get('Failed Files', 0))
+        success_rate = (passed / total * 100) if total > 0 else 0
+        total_files = total
+    except:
+        success_rate = 0
+        failed_files = 0
+        total_files = 0
+
+    return f"""
+        <html>
+            <body style="font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; margin: 0; background-color: #f5f5f5;">
+                <div style="max-width: 600px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <!-- Header Section -->
+                    <div style="text-align: center; margin-bottom: 30px;">
+                        <h1 style="color: #2c3e50; margin: 0; font-size: 24px;">
+                            🔄 DataSyncX Processing Report
+                        </h1>
+                        <p style="color: #7f8c8d; margin: 10px 0 0 0;">
+                            Generated on {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}
+                        </p>
+                    </div>
+
+                    <!-- Status Banner -->
+                    <div style="background-color: {('#27ae60' if failed_files == 0 else '#e74c3c') if total_files > 0 else '#3498db'}; 
+                              color: white; 
+                              padding: 15px; 
+                              border-radius: 8px; 
+                              text-align: center; 
+                              margin-bottom: 20px;">
+                        <h2 style="margin: 0; font-size: 18px;">
+                            {('✅ All Files Processed Successfully' if failed_files == 0 else '⚠️ Some Files Failed') if total_files > 0 else 'ℹ️ No Files Processed'}
+                        </h2>
+                    </div>
+
+                    <!-- Activity Summary -->
+                    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <h2 style="color: #34495e; font-size: 18px; margin: 0 0 15px 0;">
+                            📊 Activity Summary
+                        </h2>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">Activity ID</p>
+                                <p style="color: #2c3e50; margin: 0; font-weight: 500;">{stats.get('Activity ID', 'N/A')}</p>
+                            </div>
+                            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">Success Rate</p>
+                                <p style="color: #2c3e50; margin: 0; font-weight: 500;">{success_rate:.1f}%</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Processing Statistics -->
+                    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <h2 style="color: #34495e; font-size: 18px; margin: 0 0 15px 0;">
+                            📈 Processing Statistics
+                        </h2>
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
+                            <div style="text-align: left; padding: 10px; background: white; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">Total Files</p>
+                                <p style="color: #2c3e50; margin: 0; font-weight: 500;">📁 {stats.get('Total Files', '0')}</p>
+                            </div>
+                            <div style="text-align: left; padding: 10px; background: white; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">Passed</p>
+                                <p style="color: #27ae60; margin: 0; font-weight: 500;">✅ {stats.get('Passed Files', '0')}</p>
+                            </div>
+                            <div style="text-align: left; padding: 10px; background: white; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">Failed</p>
+                                <p style="color: #e74c3c; margin: 0; font-weight: 500;">❌ {stats.get('Failed Files', '0')}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Size Information -->
+                    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <h2 style="color: #34495e; font-size: 18px; margin: 0 0 15px 0;">
+                            📦 Size Information
+                        </h2>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">XML Size</p>
+                                <p style="color: #2c3e50; margin: 0; font-weight: 500;">{format_size(stats.get('Total XML Size', 0))}</p>
+                            </div>
+                            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">PDF Size</p>
+                                <p style="color: #2c3e50; margin: 0; font-weight: 500;">{format_size(stats.get('Total PDF Size', 0))}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Timing Information -->
+                    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <h2 style="color: #34495e; font-size: 18px; margin: 0 0 15px 0;">
+                            ⏰ Processing Timeline
+                        </h2>
+                        <div style="display: grid; grid-template-columns: 1fr; gap: 10px;">
+                            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">Started</p>
+                                <p style="color: #2c3e50; margin: 0; font-weight: 500;">{format_datetime(stats.get('Activity Start Time', 'N/A'))}</p>
+                            </div>
+                            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">Completed</p>
+                                <p style="color: #2c3e50; margin: 0; font-weight: 500;">{format_datetime(stats.get('Activity End Time', 'N/A'))}</p>
+                            </div>
+                            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <p style="color: #7f8c8d; margin: 0 0 5px 0; font-size: 12px;">Duration</p>
+                                <p style="color: #2c3e50; margin: 0; font-weight: 500;">⌛ {duration_str}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Footer -->
+                    <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
+                        <p style="color: #95a5a6; margin: 0; font-size: 12px;">
+                            Generated automatically by DataSyncX System 🤖
+                        </p>
+                        <p style="color: #95a5a6; margin: 5px 0 0 0; font-size: 12px;">
+                            For support, contact IT Service Desk
+                        </p>
+                    </div>
+                </div>
+            </body>
+        </html>
+    """
+
+def format_size(size_input):
+    """Convert bytes to human readable format"""
+    try:
+        # If size_input is a string, clean it up
+        if isinstance(size_input, str):
+            # Remove any non-digit characters except decimal points
+            size_input = ''.join(c for c in size_input if c.isdigit() or c == '.')
+            if not size_input:  # If string is empty after cleaning
+                return "0 B"
+        
+        size_in_bytes = float(size_input)  # Use float instead of int
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_in_bytes < 1024:
+                return f"{size_in_bytes:.2f} {unit}"
+            size_in_bytes /= 1024
+        return f"{size_in_bytes:.2f} TB"
+    except (ValueError, TypeError, AttributeError):
+        return "0 B"
+
+def format_datetime(datetime_str):
+    """Format datetime string to more readable format"""
+    try:
+        dt = datetime.fromisoformat(datetime_str)
+        return dt.strftime('%B %d, %Y at %H:%M:%S')
+    except:
+        return datetime_str
 
 def process_files(activity_id, logger):
     pickup_folder = f"{config['DEFAULT']['pickup_folder']}"
@@ -468,7 +671,7 @@ def process_activity(activity_id):
         logger.info(f"Process activity {activity_id} completed successfully.")
 
         # Prepare email content
-        subject = f"Activity {activity_id} Completed"
+        subject = f"DataSyncX-1.0 : Activity {activity_id} Completed"
         body = (f"Activity ID: {activity_id}\n"
                 f"Total Files: {total_files}\n"
                 f"Passed Files: {passed_files}\n"
@@ -478,8 +681,8 @@ def process_activity(activity_id):
                 f"Activity Start Time: {activity_start_time}\n"
                 f"Activity End Time: {activity_end_time}\n")
 
-        # Send email
-        send_email(subject, body, config, logger)
+        # Send email with activity_id
+        send_email(subject, body, config, logger, activity_id)
 
     except Exception as e:
         logger.error(f"Process activity {activity_id} failed. Error: {e}")
@@ -492,12 +695,11 @@ def process_activity(activity_id):
         body = (f"Activity ID: {activity_id}\n"
                 f"An error occurred during the processing.\n"
                 f"Error: {e}\n"
-                f"Traceback: {traceback.format_exc()}\n"
                 f"Activity Start Time: {activity_start_time}\n"
                 f"Activity End Time: {activity_end_time}\n")
 
-        # Send email
-        send_email(subject, body, config, logger)
+        # Send email with activity_id
+        send_email(subject, body, config, logger, activity_id)
 
 
 if __name__ == "__main__":

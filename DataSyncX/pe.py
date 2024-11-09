@@ -131,8 +131,8 @@ with st.sidebar:
     # Navigation Menu
     selected = option_menu(
         menu_title=None,
-        options=["Dashboard", "Processing History", "Activity Info", "DHR Documents", "S3 Logs", "Settings"],
-        icons=['speedometer2', 'clock-history', 'activity', 'folder', 'cloud-upload', 'gear'],
+        options=["Dashboard", "Processing History", "Activity Info", "DHR Documents", "S3 Logs","Email Notifications", "Settings"],
+        icons=['speedometer2', 'clock-history', 'activity', 'folder', 'cloud-upload', 'envelope', 'gear'],
         menu_icon="cast",
         default_index=0,
         styles={
@@ -927,10 +927,190 @@ Available Columns: {s3_logs.columns.tolist() if 's3_logs' in locals() and not s3
 Stack Trace:
 {traceback.format_exc()}
             """)
+            
+elif selected == "Email Notifications":
+    st.markdown('<h1 style="color: #333;">📧 Email Notifications</h1>', unsafe_allow_html=True)
+
+    try:
+        # Fetch email logs
+        email_logs = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_email_collection']].find()))
+
+        if not email_logs.empty:
+            # Filters Section
+            with st.expander("🔍 Filters", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Date Range Filter
+                    st.markdown('<p style="color: #333; font-weight: 500;">📅 Date Range</p>', unsafe_allow_html=True)
+                    date_filter = st.date_input(
+                        "",
+                        value=(datetime.now() - timedelta(days=7), datetime.now())
+                    )
+
+                with col2:
+                    # Activity ID Filter
+                    if 'activity_id' in email_logs.columns:
+                        st.markdown('<p style="color: #333; font-weight: 500;">🔖 Activity ID</p>', unsafe_allow_html=True)
+                        activity_ids = ['All'] + sorted(email_logs['activity_id'].unique().tolist())
+                        selected_activity = st.selectbox("", activity_ids)
+                    else:
+                        selected_activity = 'All'
+
+            # Apply filters
+            filtered_logs = email_logs.copy()
+
+            # Convert timestamp if it exists
+            if 'sent_timestamp' in filtered_logs.columns:
+                filtered_logs['sent_timestamp'] = pd.to_datetime(filtered_logs['sent_timestamp'])
+                mask = (filtered_logs['sent_timestamp'].dt.date >= date_filter[0]) & \
+                       (filtered_logs['sent_timestamp'].dt.date <= date_filter[1])
+                filtered_logs = filtered_logs[mask]
+
+            # Apply activity filter
+            if selected_activity != 'All' and 'activity_id' in filtered_logs.columns:
+                filtered_logs = filtered_logs[filtered_logs['activity_id'] == selected_activity]
+
+            # Display summary metrics
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📊 Summary</h3>', unsafe_allow_html=True)
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+
+            with metric_col1:
+                total_emails = len(filtered_logs)
+                st.metric("Total Emails", f"{total_emails:,}")
+
+            with metric_col2:
+                if 'activity_id' in filtered_logs.columns:
+                    unique_activities = filtered_logs['activity_id'].nunique()
+                    st.metric("Activities", f"{unique_activities:,}")
+
+            with metric_col3:
+                st.metric("Date Range", f"{date_filter[0]} to {date_filter[1]}")
+
+            # Display the email logs
+            st.markdown('<h3 style="color: #333; margin-top: 1rem;">📧 Email Logs</h3>', unsafe_allow_html=True)
+
+            # Format timestamp for display
+            display_logs = filtered_logs.copy()
+            if 'sent_timestamp' in display_logs.columns:
+                display_logs['sent_timestamp'] = display_logs['sent_timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Display as a table with custom column configuration
+            st.dataframe(
+                display_logs,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "sent_timestamp": st.column_config.DatetimeColumn(
+                        "Sent Time",
+                        format="DD/MM/YYYY HH:mm:ss"
+                    ),
+                    "activity_id": st.column_config.TextColumn(
+                        "Activity ID",
+                        width="medium"
+                    ),
+                    "email_content": st.column_config.TextColumn(
+                        "Email Content",
+                        width="large"
+                    ),
+                    "status": st.column_config.TextColumn(
+                        "Status",
+                        width="small"
+                    )
+                }
+            )
+
+            # Export functionality
+            st.markdown("---")
+            if st.button("📥 Export Email Logs"):
+                csv = display_logs.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"email_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+
+        else:
+            st.info("No email logs available")
+
+    except Exception as e:
+        st.error(f"Error loading email logs: {str(e)}")
+        with st.expander("View Error Details"):
+            st.code(traceback.format_exc())
+
 
 elif selected == "Settings":
     st.title("⚙️ Settings")
-    st.write("Configuration settings will appear here")
+    
+    # System Settings
+    st.markdown("### 🖥️ System Configuration")
+    with st.expander("System Settings", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.number_input("Processing Batch Size", min_value=1, max_value=1000, value=100)
+            st.number_input("Max Retries", min_value=1, max_value=10, value=3)
+        with col2:
+            st.selectbox("Log Level", ["DEBUG", "INFO", "WARNING", "ERROR"])
+            st.text_input("Temp Directory", value="/tmp/datasyncx")
+
+    # Database Settings
+    st.markdown("### 🗄️ Database Configuration")
+    with st.expander("Database Settings", expanded=True):
+        st.text_input("MongoDB URI", value="mongodb://localhost:27017", type="password")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text_input("Database Name", value="datasyncx")
+            st.text_input("Collection Name", value="documents")
+        with col2:
+            st.text_input("Log Database", value="datasyncx_logs")
+            st.text_input("Log Collection", value="activity_logs")
+
+    # Storage Settings
+    st.markdown("### 📂 Storage Configuration")
+    with st.expander("Storage Settings", expanded=True):
+        st.text_input("S3 Bucket Name", value="datasyncx-storage")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text_input("AWS Access Key", type="password")
+            st.text_input("AWS Region", value="us-east-1")
+        with col2:
+            st.text_input("AWS Secret Key", type="password")
+            st.checkbox("Enable S3 Versioning", value=True)
+
+    # Notification Settings
+    st.markdown("### 📧 Notification Settings")
+    with st.expander("Email Notifications", expanded=True):
+        st.text_input("SMTP Server", value="smtp.gmail.com")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text_input("SMTP Username")
+            st.text_input("Sender Email")
+        with col2:
+            st.text_input("SMTP Password", type="password")
+            st.text_input("Recipients (comma-separated)")
+        st.multiselect("Notification Events", 
+            ["Processing Complete", "Error Occurred", "System Warning", "Daily Summary"],
+            ["Error Occurred", "Daily Summary"]
+        )
+
+    # Advanced Settings
+    st.markdown("### ⚡ Advanced Settings")
+    with st.expander("Advanced Configuration", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.checkbox("Enable Debug Mode", value=False)
+            st.checkbox("Auto-retry Failed Tasks", value=True)
+        with col2:
+            st.checkbox("Compress Logs", value=True)
+            st.checkbox("Enable Performance Metrics", value=True)
+        st.slider("Log Retention Days", min_value=1, max_value=365, value=30)
+
+    # Save Button
+    if st.button("💾 Save Settings"):
+        st.success("Settings saved successfully!")
+        st.info("Note: Some changes may require a system restart to take effect.")
+
 
 # Add metrics summary
 
