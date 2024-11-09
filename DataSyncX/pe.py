@@ -10,6 +10,8 @@ import plotly.graph_objects as go
 import traceback
 from io import BytesIO
 import certifi
+import urllib.parse
+
 
 # Set page config must be the first Streamlit command
 st.set_page_config(
@@ -172,42 +174,46 @@ st.markdown("""
 @st.cache_resource
 def init_mongodb():
     try:
-        # Create MongoDB client with secrets
+        # Get URI from secrets
+        uri = st.secrets["DEFAULT"]["mongodb_uri"]
+        
+        # Debug print (will show in Streamlit Cloud logs)
+        print("Attempting to connect to MongoDB...")
+        
+        # Create client with minimal options
         client = MongoClient(
-            st.secrets["DEFAULT"]["mongodb_uri"],
-            tlsCAFile=certifi.where(),
-            connectTimeoutMS=30000,
-            socketTimeoutMS=30000,
-            serverSelectionTimeoutMS=30000
+            uri,
+            tlsCAFile=certifi.where()
         )
         
         # Test connection
-        print("Testing MongoDB connection...")  # Debug print
         client.admin.command('ping')
-        print("MongoDB ping successful")  # Debug print
+        print("MongoDB connection successful!")
         return client
         
     except Exception as e:
-        print(f"MongoDB connection error: {e}")  # Debug print
+        print(f"Detailed error: {str(e)}")  # Debug print
         st.error(f"⚠️ MongoDB Connection Failed: {e}")
         return None
 
-# Initialize MongoDB client
-db_client = init_mongodb()
-
-if not db_client:
-    st.error("⚠️ Database connection failed!")
-    st.stop()
-
+# Initialize database connection
 try:
-    # Initialize databases using Streamlit secrets
-    db = db_client[st.secrets["DEFAULT"]["mongodb_database"]]
-    log_db = db_client[st.secrets["DEFAULT"]["mongodb_log_database"]]
+    db_client = init_mongodb()
     
-    
-    
+    if db_client:
+        # Initialize databases
+        db = db_client[st.secrets["DEFAULT"]["mongodb_database"]]
+        log_db = db_client[st.secrets["DEFAULT"]["mongodb_log_database"]]
+        
+        # Test database access
+        print(f"Available collections in main DB: {db.list_collection_names()}")
+        st.success("✅ Database connected!")
+    else:
+        st.error("⚠️ Database connection failed!")
+        st.stop()
+        
 except Exception as e:
-    print(f"Database initialization error: {e}")  # Debug print
+    print(f"Database initialization error: {str(e)}")
     st.error(f"⚠️ Database initialization failed: {e}")
     st.stop()
 
@@ -1463,4 +1469,5 @@ elif selected == "About":
             DataSyncX © 2024 All rights reserved
         </div>
     """, unsafe_allow_html=True)
+
 
