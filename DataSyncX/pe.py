@@ -168,56 +168,48 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Load configuration
-@st.cache_resource
-def load_config():
-    try:
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'props.properties')
-        if not os.path.exists(config_path):
-            st.error("⚠️ Configuration file not found!")
-            st.stop()
-        config = configparser.ConfigParser()
-        config.read(config_path)
-        return config
-    except Exception as e:
-        st.error(f"⚠️ Error loading configuration: {e}")
-        st.stop()
-
-
 # Initialize MongoDB
 @st.cache_resource
-def init_mongodb(_config):
+def init_mongodb():
     try:
-        # Update MongoDB connection
-        try:
-            client = MongoClient(
-                _config['DEFAULT']['mongodb_uri'],
-                tls=True,
-                tlsCAFile=certifi.where()
-            )
-            # Test connection
-            client.admin.command('ping')
-            st.success("✅ Database connected!")
-        except Exception as e:
-            st.error(f"⚠️ Database connection failed: {e}")
-            return None
+        # Create MongoDB client with secrets
+        client = MongoClient(
+            st.secrets["DEFAULT"]["mongodb_uri"],
+            tlsCAFile=certifi.where(),
+            connectTimeoutMS=30000,
+            socketTimeoutMS=30000,
+            serverSelectionTimeoutMS=30000
+        )
+        
+        # Test connection
+        print("Testing MongoDB connection...")  # Debug print
+        client.admin.command('ping')
+        print("MongoDB ping successful")  # Debug print
+        return client
+        
     except Exception as e:
+        print(f"MongoDB connection error: {e}")  # Debug print
         st.error(f"⚠️ MongoDB Connection Failed: {e}")
         return None
 
+# Initialize MongoDB client
+db_client = init_mongodb()
 
-# Load config and initialize MongoDB
-config = load_config()
-client = init_mongodb(config)
-
-if not client:
+if not db_client:
     st.error("⚠️ Database connection failed!")
     st.stop()
 
-# Initialize databases
-db = client[config['DEFAULT']['mongodb_database']]
-log_db = client[config['DEFAULT']['mongodb_log_database']]
-
+try:
+    # Initialize databases using Streamlit secrets
+    db = db_client[st.secrets["DEFAULT"]["mongodb_database"]]
+    log_db = db_client[st.secrets["DEFAULT"]["mongodb_log_database"]]
+    
+    
+    
+except Exception as e:
+    print(f"Database initialization error: {e}")  # Debug print
+    st.error(f"⚠️ Database initialization failed: {e}")
+    st.stop()
 
 # Add this helper function at the top level
 def normalize_link_field(df):
@@ -294,14 +286,14 @@ if selected == "Dashboard":
 
     with col1:
         try:
-            total_docs = db[config['DEFAULT']['mongodb_collection']].count_documents({})
+            total_docs = db[st.secrets['DEFAULT']['mongodb_collection']].count_documents({})
             st.metric("📑 Total Processed Documents", f"{total_docs:,}")
         except Exception as e:
             st.metric("📑 Total Documents", "Error")
 
     with col2:
         try:
-            activity_info = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_activity_info_collection']].find()))
+            activity_info = pd.DataFrame(list(log_db[st.secrets['DEFAULT']['mongodb_log_activity_info_collection']].find()))
             if not activity_info.empty:
                 success_rate = (activity_info['passed_files'].sum() / activity_info['total_files'].sum() * 100)
                 st.metric("✅ Success Rate", f"{success_rate:.1f}%")
@@ -310,7 +302,7 @@ if selected == "Dashboard":
 
     with col3:
         try:
-            pickup_folder = config['DEFAULT']['pickup_folder']
+            pickup_folder = st.secrets['DEFAULT']['pickup_folder']
             if os.path.exists(pickup_folder):
                 files = [f for f in os.listdir(pickup_folder) if os.path.isfile(os.path.join(pickup_folder, f))]
                 st.metric("📁 Files in Pickup", len(files))
@@ -409,7 +401,7 @@ if selected == "Dashboard":
 
     try:
         # Get data from your MongoDB collection
-        original_data = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_history_collection']].find()))
+        original_data = pd.DataFrame(list(log_db[st.secrets['DEFAULT']['mongodb_log_history_collection']].find()))
 
         # Display filters
         with st.expander("🔍 Filters", expanded=True):
@@ -427,7 +419,7 @@ if selected == "Dashboard":
                 # Activity Filter
                 try:
                     activity_ids = list(
-                        log_db[config['DEFAULT']['mongodb_log_activity_info_collection']].distinct('activity_id'))
+                        log_db[st.secrets['DEFAULT']['mongodb_log_activity_info_collection']].distinct('activity_id'))
                     if activity_ids:
                         selected_activity = st.selectbox(
                             "🔖 Select Activity ID",
@@ -446,7 +438,7 @@ if selected == "Dashboard":
                 try:
                     # Get unique status_ids from the history collection
                     status_ids = ['All'] + sorted(
-                        list(log_db[config['DEFAULT']['mongodb_log_history_collection']].distinct('status')))
+                        list(log_db[st.secrets['DEFAULT']['mongodb_log_history_collection']].distinct('status')))
                     selected_status = st.selectbox(
                         "⚡ Status",
                         status_ids,
@@ -520,7 +512,7 @@ elif selected == "Processing History":
 
     try:
         # Fetch the history data
-        pair_history = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_pair_history_collection']].find()))
+        pair_history = pd.DataFrame(list(log_db[st.secrets['DEFAULT']['mongodb_log_pair_history_collection']].find()))
 
         if not pair_history.empty:
             # Debug info
@@ -644,7 +636,7 @@ elif selected == "Activity Info":
     st.markdown('<h1 style="color: #333;">📊 Activity Information</h1>', unsafe_allow_html=True)
 
     try:
-        activity_info = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_activity_info_collection']].find()))
+        activity_info = pd.DataFrame(list(log_db[st.secrets['DEFAULT']['mongodb_log_activity_info_collection']].find()))
 
         if not activity_info.empty:
             # Debug: Show available columns
@@ -761,7 +753,7 @@ elif selected == "DHR Documents":
     st.markdown('<h1 style="color: #333;">📁 DHR Documents</h1>', unsafe_allow_html=True)
 
     try:
-        dhr_documents = pd.DataFrame(list(db[config['DEFAULT']['mongodb_collection']].find()))
+        dhr_documents = pd.DataFrame(list(db[st.secrets['DEFAULT']['mongodb_collection']].find()))
 
         if not dhr_documents.empty:
             dhr_documents = normalize_link_field(dhr_documents)
@@ -953,7 +945,7 @@ elif selected == "S3 Logs":
     st.markdown('<h1 style="color: #333;">☁️ S3 Storage Logs</h1>', unsafe_allow_html=True)
 
     try:
-        s3_logs = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_s3_collection']].find()))
+        s3_logs = pd.DataFrame(list(log_db[st.secrets['DEFAULT']['mongodb_log_s3_collection']].find()))
 
         if not s3_logs.empty:
             # Debug: Show available columns
@@ -1070,7 +1062,7 @@ elif selected == "Email Notifications":
 
     try:
         # Fetch email logs
-        email_logs = pd.DataFrame(list(log_db[config['DEFAULT']['mongodb_log_email_collection']].find()))
+        email_logs = pd.DataFrame(list(log_db[st.secrets['DEFAULT']['mongodb_log_email_collection']].find()))
 
         if not email_logs.empty:
             # Filters Section
