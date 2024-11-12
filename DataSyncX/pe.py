@@ -45,6 +45,16 @@ def check_password():
             }
             .stButton > button {
                 width: 100%;
+                background-color: #4CAF50;
+                color: white;
+                padding: 10px;
+                margin-top: 20px;
+                border-radius: 5px;
+                border: none;
+                font-weight: bold;
+            }
+            .stButton > button:hover {
+                background-color: #45a049;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -54,21 +64,15 @@ def check_password():
     with col2:
         def credentials_entered():
             """Checks whether credentials entered by the user are correct."""
-            # Get username and password from secrets
             valid_username1 = st.secrets["credentials"]["username1"]
             valid_username2 = st.secrets["credentials"]["username2"]
             valid_password = st.secrets["credentials"]["password"]
             
-            # Check if entered credentials are correct
-            if (st.session_state["username"] in [valid_username1, valid_username2] and 
-                st.session_state["password"] == valid_password):
-                st.session_state["password_correct"] = True
-            else:
-                st.session_state["password_correct"] = False
+            return (st.session_state["username"] in [valid_username1, valid_username2] and 
+                    st.session_state["password"] == valid_password)
 
         # First run, show input for credentials
         if "password_correct" not in st.session_state:
-            # Show logo and company name only on initial password screen
             st.markdown("""
                 <div class="login-container">
                     <div class="login-header">
@@ -79,18 +83,17 @@ def check_password():
                 </div>
             """, unsafe_allow_html=True)
             
-            st.text_input(
-                "Username", 
-                key="username",
-                placeholder="Enter your username"
-            )
-            st.text_input(
-                "Password", 
-                type="password", 
-                on_change=credentials_entered, 
-                key="password",
-                placeholder="••••••••"
-            )
+            username = st.text_input("Username", key="username", placeholder="Enter your username")
+            password = st.text_input("Password", type="password", key="password", placeholder="••••••••")
+            
+            # Add login button
+            if st.button("Login"):
+                if credentials_entered():
+                    st.session_state["password_correct"] = True
+                    st.rerun()
+                else:
+                    st.error("😕 Incorrect username or password")
+            
             st.markdown("""
                 <p style='text-align: center; color: #666; font-size: 0.8rem; margin-top: 1rem;'>
                     Contact your administrator if you need access.
@@ -98,30 +101,8 @@ def check_password():
             """, unsafe_allow_html=True)
             return False
         
-        # Credentials incorrect
-        elif not st.session_state["password_correct"]:
-            st.text_input(
-                "Username", 
-                key="username",
-                placeholder="Enter your username"
-            )
-            st.text_input(
-                "Password", 
-                type="password", 
-                on_change=credentials_entered, 
-                key="password",
-                placeholder="••••••••"
-            )
-            st.error("😕 Incorrect username or password")
-            st.markdown("""
-                <p style='text-align: center; color: #666; font-size: 0.8rem; margin-top: 1rem;'>
-                    Forgot your password? Contact your administrator.
-                </p>
-            """, unsafe_allow_html=True)
-            return False
-        
-        return True
-
+        return st.session_state["password_correct"]
+    
 # Check password before showing the main app
 if not check_password():
     st.stop()
