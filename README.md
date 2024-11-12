@@ -109,8 +109,7 @@ DataSyncX is a comprehensive monitoring system designed for tracking and validat
 - Cloudingary for storage
 - Open source community for various tools and libraries
 
----
+
 <div align="center">
   Made with ❤️ by Vijayaraj Pushpalingam
 </div>
-```
