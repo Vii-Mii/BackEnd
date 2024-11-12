@@ -10,7 +10,7 @@
 </div>
 
 ## 🔗 Live Demo
-[DataSyncX Monitor](https://datasyncx-monitor.onrender.com)
+[DataSyncX Monitor](https://datasyncx-monitor.streamlit.app/)
 
 ## 🔑 Demo Access
 To explore the application, use these credentials:
@@ -19,8 +19,6 @@ To explore the application, use these credentials:
 |---------|----------|-----------|
 | User 1  | vijay    | datasyncx |
 | User 2  | suriya   | datasyncx |
-
-> **Note**: Initial loading might take 1-2 minutes as the application is hosted on a free tier service.
 
 ## 📌 About
 DataSyncX is a comprehensive monitoring system designed for tracking and validating Device History Records (DHRs) processing and archival. Built with Python and Streamlit, it provides real-time insights through interactive dashboards and automated notifications, ensuring efficient data synchronization and processing compliance.
