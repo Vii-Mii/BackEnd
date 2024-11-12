@@ -76,31 +76,10 @@ DataSyncX is a comprehensive monitoring system designed for tracking and validat
 ## 💻 Local Development
 
 ### Prerequisites
-bash
-Python 3.9+
-MongoDB 5.0+
-Git
-
-### Setup
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Vii-Mii/DataSyncX.git
-   ```
-
-2. Install dependencies
-```bash
-pip install -r requirements.txt
-```
-
-3. Configure environment variables
-```bash
-# Create .streamlit/secrets.toml with required credentials
-```
-
-4. Run application
-```bash
-streamlit run pe.py
-```
+- Python 3.9+
+- MongoDB 5.0+
+- Git
+- cloudinary
 
 ## 🔍 Features Overview
 
@@ -126,8 +105,7 @@ streamlit run pe.py
 
 ## 🙏 Acknowledgments
 - Streamlit for the framework
-- MongoDB for database solutions
-- Render for hosting service 
+- MongoDB for database solutions 
 - Cloudingary for storage
 - Open source community for various tools and libraries
 
